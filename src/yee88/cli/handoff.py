@@ -390,13 +390,17 @@ def send(
         store = TopicStateStore(state_path)
         existing_thread_id = await store.find_thread_for_context(chat_id, context)
         
+        thread_id: int | None = None
+        reused = False
+        
         if existing_thread_id is not None:
-            # 复用已有 topic，更新 session resume token
+            # 尝试复用已有 topic，先验证它在 Telegram 端是否还存在
             resume_token = ResumeToken(engine="opencode", value=session_id)
             await store.set_session_resume(chat_id, existing_thread_id, resume_token)
             thread_id = existing_thread_id
             reused = True
-        else:
+        
+        if thread_id is None:
             # 创建新 topic
             thread_id = await _create_handoff_topic(
                 token=token,
@@ -418,6 +422,7 @@ def send(
         if model_id:
             override = EngineOverrides(model=model_id)
             await store.set_engine_override(chat_id, thread_id, "opencode", override)
+        
         handoff_msg = _format_handoff_message(
             session_id=session_id,
             messages=messages,
@@ -430,6 +435,31 @@ def send(
             message=handoff_msg,
             thread_id=thread_id,
         )
+        
+        # 如果复用的 topic 发送失败（可能已被删除），清理 state 并创建新 topic 重试
+        if not success and reused:
+            await store.delete_thread(chat_id, thread_id)
+            thread_id = await _create_handoff_topic(
+                token=token,
+                chat_id=chat_id,
+                session_id=session_id,
+                project=project_name,
+                config_path=config_path,
+            )
+            if thread_id is None:
+                return False, None, False
+            reused = False
+            await store.set_default_engine(chat_id, thread_id, "opencode")
+            if model_id:
+                override = EngineOverrides(model=model_id)
+                await store.set_engine_override(chat_id, thread_id, "opencode", override)
+            success = await _send_to_telegram(
+                token=token,
+                chat_id=chat_id,
+                message=handoff_msg,
+                thread_id=thread_id,
+            )
+        
         return success, thread_id, reused
     
     success, thread_id, reused = anyio.run(do_handoff)

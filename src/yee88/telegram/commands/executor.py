@@ -15,7 +15,7 @@ from ...model import Action, ActionEvent, EngineId, ResumeToken, TakopiEvent
 from ...progress import ProgressTracker
 from ...router import RunnerUnavailableError
 from ...runner import Runner
-from ...runners.run_options import EngineRunOptions, apply_run_options
+from ...runners.run_options import EngineRunOptions, apply_run_options, apply_runtime_env
 from ...runner_bridge import (
     ExecBridgeConfig,
     IncomingMessage as RunnerIncomingMessage,
@@ -225,7 +225,12 @@ async def _run_engine(
                 reply_to=reply_ref,
                 thread_id=thread_id,
             )
-            with apply_run_options(run_options):
+            runtime_env = {
+                "YEE88_CHAT_ID": str(chat_id),
+            }
+            if thread_id is not None:
+                runtime_env["YEE88_THREAD_ID"] = str(thread_id)
+            with apply_run_options(run_options), apply_runtime_env(runtime_env):
                 await handle_message(
                     exec_cfg,
                     runner=runner,

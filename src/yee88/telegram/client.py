@@ -236,6 +236,35 @@ class TelegramClient:
             chat_id=chat_id,
         )
 
+    async def send_photo(
+        self,
+        chat_id: int,
+        filename: str,
+        content: bytes,
+        reply_to_message_id: int | None = None,
+        message_thread_id: int | None = None,
+        disable_notification: bool | None = False,
+        caption: str | None = None,
+    ) -> Message | None:
+        async def execute() -> Message | None:
+            return await self._client.send_photo(
+                chat_id=chat_id,
+                filename=filename,
+                content=content,
+                reply_to_message_id=reply_to_message_id,
+                message_thread_id=message_thread_id,
+                disable_notification=disable_notification,
+                caption=caption,
+            )
+
+        return await self.enqueue_op(
+            key=self.unique_key("send_photo"),
+            label="send_photo",
+            execute=execute,
+            priority=SEND_PRIORITY,
+            chat_id=chat_id,
+        )
+
     async def edit_message_text(
         self,
         chat_id: int,

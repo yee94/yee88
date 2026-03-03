@@ -59,6 +59,7 @@ from .init import (
 )
 from .onboarding_cmd import chat_id, onboarding_paths
 from .topic import run_topic
+from .send_file import send_file
 from .plugins import plugins_cmd
 from .run import (
     _default_engine_for_setup,
@@ -218,6 +219,7 @@ def create_app() -> typer.Typer:
     app.add_typer(cron_app, name="cron")
     app.add_typer(handoff_app, name="handoff")
     app.command(name="reload")(reload_command)
+    app.command(name="send-file")(send_file)
     app.callback()(app_main)
     for engine_id in _engine_ids_for_cli():
         help_text = f"Run with the {engine_id} engine."

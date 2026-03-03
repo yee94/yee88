@@ -25,6 +25,7 @@ from .model import (
 from .utils.paths import get_run_base_dir
 from .utils.streams import drain_stderr, iter_bytes_lines
 from .utils.subprocess import manage_subprocess
+from .runners.run_options import get_runtime_env
 
 
 class ResumeTokenMixin:
@@ -171,6 +172,15 @@ class JsonlSubprocessRunner(BaseRunner):
     def env(self, *, state: Any) -> dict[str, str] | None:
         return None
 
+    def _merge_runtime_env(self, env: dict[str, str] | None) -> dict[str, str] | None:
+        """Merge transport-injected runtime env vars into the subprocess env."""
+        runtime = get_runtime_env()
+        if not runtime:
+            return env
+        import os
+        merged = dict(env) if env is not None else dict(os.environ)
+        merged.update(runtime)
+        return merged
     def new_state(self, prompt: str, resume: ResumeToken | None) -> Any:
         return JsonlRunState()
 
@@ -603,7 +613,7 @@ class JsonlSubprocessRunner(BaseRunner):
         logger = self.get_logger()
         cmd = [self.command(), *self.build_args(prompt, resume, state=state)]
         payload = self.stdin_payload(prompt, resume, state=state)
-        env = self.env(state=state)
+        env = self._merge_runtime_env(self.env(state=state))
         logger.info(
             "runner.start",
             engine=self.engine,

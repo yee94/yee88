@@ -16,6 +16,7 @@ from ..model import ResumeToken
 from ..settings import load_settings_if_exists
 from ..telegram.client import TelegramClient
 from ..telegram.topic_state import TopicStateStore, resolve_state_path
+from ..telegram.engine_overrides import EngineOverrides
 
 app = typer.Typer(help="Handoff session context to Telegram")
 
@@ -71,6 +72,32 @@ def _get_session_messages(session_id: str, limit: int = 5) -> list[dict]:
     # 回退到旧版文件系统格式
     return _get_session_messages_fs(session_id, limit)
 
+
+def _get_session_model_id(session_id: str) -> str | None:
+    """从 OpenCode session 最近的 assistant 消息中提取 modelID。"""
+    if not OPENCODE_DB.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(OPENCODE_DB))
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        # 取最近一条 assistant 消息的 modelID
+        cursor.execute(
+            "SELECT data FROM message "
+            "WHERE session_id = ? "
+            "ORDER BY time_created DESC LIMIT 20",
+            (session_id,),
+        )
+        for row in cursor.fetchall():
+            msg_data = json.loads(row["data"])
+            model_id = msg_data.get("modelID")
+            if model_id and msg_data.get("role") == "assistant":
+                conn.close()
+                return model_id
+        conn.close()
+    except (sqlite3.Error, json.JSONDecodeError, OSError):
+        pass
+    return None
 
 def _get_session_messages_sqlite(session_id: str, limit: int = 5) -> list[dict]:
     try:
@@ -155,6 +182,15 @@ def _get_session_messages_fs(session_id: str, limit: int = 5) -> list[dict]:
     return result
 
 
+import re
+
+
+def _escape_markdown(text: str) -> str:
+    """转义 Telegram Markdown V1 特殊字符，避免解析错误。"""
+    # Markdown V1 特殊字符: _ * ` [
+    return re.sub(r'([_*`\[\]])', r'\\\1', text)
+
+
 def _format_handoff_message(
     session_id: str,
     messages: list[dict],
@@ -174,7 +210,12 @@ def _format_handoff_message(
         text = msg.get("text", "")
         role_label = "👤" if role == "user" else "🤖"
         if len(text) > 500:
-            text = text[:500] + "..."
+            text = text[:500]
+            # 确保截断不会留下未闭合的反引号
+            if text.count('`') % 2 != 0:
+                text = text.rsplit('`', 1)[0]
+            text += "..."
+        text = _escape_markdown(text)
         lines.append(f"{role_label} **{role}**:")
         lines.append(text)
         lines.append("")
@@ -230,11 +271,20 @@ async def _send_to_telegram(
 ) -> bool:
     client = TelegramClient(token)
     try:
+        # 先尝试 Markdown 格式发送
         result = await client.send_message(
             chat_id=chat_id,
             text=message,
             message_thread_id=thread_id,
             parse_mode="Markdown",
+        )
+        if result is not None:
+            return True
+        # Markdown 解析失败时降级为纯文本
+        result = await client.send_message(
+            chat_id=chat_id,
+            text=message,
+            message_thread_id=thread_id,
         )
         return result is not None
     finally:
@@ -307,7 +357,7 @@ def send(
         typer.echo("❌ 会话 ID 为空", err=True)
         raise typer.Exit(1)
     
-    # 验证 project 是否已注册
+    # 验证 project 是否已注册（未注册时仅警告，不阻止 handoff）
     if session_project:
         engine_ids = list_backend_ids()
         projects_config = settings.to_projects_config(
@@ -316,13 +366,13 @@ def send(
         project_key = session_project.lower()
         if project_key not in projects_config.projects:
             available = list(projects_config.projects.keys())
-            typer.echo(f"❌ 未知项目: {session_project!r}", err=True)
+            typer.echo(f"⚠️  项目 {session_project!r} 未注册，将使用原始名称继续", err=True)
             if available:
-                typer.echo(f"   可用项目: {', '.join(available)}", err=True)
-            typer.echo(f"   请先运行: yee88 init {session_project}", err=True)
-            raise typer.Exit(1)
-        # 使用规范化的 project key
-        session_project = project_key
+                typer.echo(f"   已注册项目: {', '.join(available)}", err=True)
+            typer.echo(f"   提示: 可运行 yee88 init {session_project} 注册项目", err=True)
+        else:
+            # 使用规范化的 project key
+            session_project = project_key
     
     typer.echo(f"📖 读取会话 {session_id[:20]}...")
     
@@ -331,19 +381,43 @@ def send(
         typer.echo("❌ 无法读取会话消息", err=True)
         raise typer.Exit(1)
     
-    typer.echo("🆕 创建新 Topic...")
-    
-    async def do_handoff() -> tuple[bool, int | None]:
-        thread_id = await _create_handoff_topic(
-            token=token,
-            chat_id=chat_id,
-            session_id=session_id,
-            project=session_project or "unknown",
-            config_path=config_path,
-        )
-        if thread_id is None:
-            return False, None
+    async def do_handoff() -> tuple[bool, int | None, bool]:
+        project_name = session_project or "unknown"
+        context = RunContext(project=project_name.lower(), branch=None)
         
+        # 先查找已有的同项目 topic，避免重复创建
+        state_path = resolve_state_path(config_path)
+        store = TopicStateStore(state_path)
+        existing_thread_id = await store.find_thread_for_context(chat_id, context)
+        
+        if existing_thread_id is not None:
+            # 复用已有 topic，更新 session resume token
+            resume_token = ResumeToken(engine="opencode", value=session_id)
+            await store.set_session_resume(chat_id, existing_thread_id, resume_token)
+            thread_id = existing_thread_id
+            reused = True
+        else:
+            # 创建新 topic
+            thread_id = await _create_handoff_topic(
+                token=token,
+                chat_id=chat_id,
+                session_id=session_id,
+                project=project_name,
+                config_path=config_path,
+            )
+            reused = False
+        
+        if thread_id is None:
+            return False, None, False
+        
+        # 设置 topic 默认引擎为 opencode，确保 Telegram 端继续对话时使用正确引擎
+        await store.set_default_engine(chat_id, thread_id, "opencode")
+        
+        # 从原 session 提取模型 ID，设置为 topic 的 engine override
+        model_id = _get_session_model_id(session_id)
+        if model_id:
+            override = EngineOverrides(model=model_id)
+            await store.set_engine_override(chat_id, thread_id, "opencode", override)
         handoff_msg = _format_handoff_message(
             session_id=session_id,
             messages=messages,
@@ -356,12 +430,15 @@ def send(
             message=handoff_msg,
             thread_id=thread_id,
         )
-        return success, thread_id
+        return success, thread_id, reused
     
-    success, thread_id = anyio.run(do_handoff)
+    success, thread_id, reused = anyio.run(do_handoff)
     
     if success:
-        typer.echo("✅ 已发送到 Telegram！")
+        if reused:
+            typer.echo("✅ 已发送到已有 Topic！")
+        else:
+            typer.echo("✅ 已创建新 Topic 并发送！")
         typer.echo(f"   Session: {session_id}")
         typer.echo(f"   Project: {session_project}")
         typer.echo(f"   Topic ID: {thread_id}")

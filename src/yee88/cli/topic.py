@@ -101,12 +101,17 @@ async def _create_topic(
     project: str,
     branch: str | None,
     config_path: Path,
+    title_branch: str | None = None,
+    system_prompt: str | None = None,
 ) -> tuple[int, str] | None:
     """Create forum topic and update state file.
     
     Returns (thread_id, title) on success, None on failure.
+    ``title_branch`` is only used for the topic title when the user
+    explicitly passed ``--branch``.  When *None*, the title is just
+    the project alias.
     """
-    title = _generate_topic_title(project, branch)
+    title = _generate_topic_title(project, title_branch)
     
     client = TelegramClient(bot_token)
     try:
@@ -122,13 +127,19 @@ async def _create_topic(
         store = TopicStateStore(state_path)
         
         context = RunContext(project=project.lower(), branch=branch)
-        await store.set_context(chat_id, thread_id, context, topic_title=title)
+        await store.set_context(
+            chat_id, thread_id, context,
+            topic_title=title,
+            system_prompt=system_prompt,
+        )
         
         # Send confirmation message to the new topic
         bound_text = f"topic bound to `{project}"
         if branch:
             bound_text += f" @{branch}"
         bound_text += "`"
+        if system_prompt:
+            bound_text += f"\nsystem prompt: `{system_prompt}`"
         
         await client.send_message(
             chat_id=chat_id,
@@ -227,8 +238,10 @@ def run_topic(
     *,
     project: str | None,
     branch: str | None,
+    branch_explicit: bool = False,
     delete: bool,
     config_path: Path | None,
+    system_prompt: str | None = None,
 ) -> None:
     """Create or delete a Telegram topic bound to project/branch."""
     cwd = Path.cwd()
@@ -342,6 +355,8 @@ def run_topic(
                 project=project,
                 branch=branch,
                 config_path=cfg_path,
+                title_branch=branch if branch_explicit else None,
+                system_prompt=system_prompt,
             )
         )
         

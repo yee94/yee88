@@ -136,6 +136,19 @@ class TransportRuntime:
             return self._router.default_engine
         return project.default_engine or self._router.default_engine
 
+    def resolve_default_model(
+        self,
+        *,
+        context: RunContext | None,
+    ) -> str | None:
+        """Return the project-level default model, if configured."""
+        if context is None or context.project is None:
+            return None
+        project = self._projects.projects.get(context.project)
+        if project is None:
+            return None
+        return project.default_model
+
     @property
     def engine_ids(self) -> tuple[EngineId, ...]:
         return self._router.engine_ids

@@ -62,14 +62,18 @@ def load_or_init_config(path: str | Path | None = None) -> tuple[dict, Path]:
 class ProjectConfig:
     alias: str
     path: Path
-    worktrees_dir: Path
+    worktrees_dir: Path | None = None
     default_engine: str | None = None
+    default_model: str | None = None
+    session_mode: str | None = None
     worktree_base: str | None = None
     chat_id: int | None = None
     system_prompt: str | None = None
 
     @property
-    def worktrees_root(self) -> Path:
+    def worktrees_root(self) -> Path | None:
+        if self.worktrees_dir is None:
+            return None
         if self.worktrees_dir.is_absolute():
             return self.worktrees_dir
         return self.path / self.worktrees_dir
@@ -90,10 +94,17 @@ class ProjectsConfig:
         return self.projects.get(alias.lower())
 
     def resolve_system_prompt(self, alias: str | None) -> str | None:
+        """Resolve system prompt with inheritance: global → project.
+
+        When both global and project-level prompts exist, they are
+        concatenated (global first, then project) separated by a newline.
+        """
         project = self.resolve(alias)
-        if project is not None and project.system_prompt is not None:
-            return project.system_prompt
-        return self.system_prompt
+        project_prompt = project.system_prompt if project is not None else None
+        parts = [p for p in (self.system_prompt, project_prompt) if p]
+        if not parts:
+            return None
+        return "\n".join(parts)
 
     def project_for_chat(self, chat_id: int | None) -> str | None:
         if chat_id is None:

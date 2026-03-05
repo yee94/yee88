@@ -32,6 +32,8 @@ def resolve_run_cwd(
     branch = _sanitize_branch(context.branch)
     if _matches_project_branch(project.path, branch):
         return project.path
+    if project.worktrees_dir is None:
+        return project.path
     return ensure_worktree(project, branch)
 
 
@@ -42,6 +44,11 @@ def ensure_worktree(project: ProjectConfig, branch: str) -> Path:
 
     branch = _sanitize_branch(branch)
     worktrees_root = project.worktrees_root
+    if worktrees_root is None:
+        raise WorktreeError(
+            f"project {project.alias!r} has no worktrees_dir configured"
+        )
+    assert isinstance(worktrees_root, Path)
     worktree_path = worktrees_root / branch
     _ensure_within_root(worktrees_root, worktree_path)
 

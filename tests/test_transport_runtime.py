@@ -101,6 +101,85 @@ def test_resolve_message_reply_ctx_overrides_ambient() -> None:
     assert resolved.context_source == "reply_ctx"
 
 
+def test_resolve_system_prompt_global_only() -> None:
+    codex = ScriptRunner([Return(answer="ok")], engine="codex")
+    router = AutoRouter(
+        entries=[RunnerEntry(engine=codex.engine, runner=codex)],
+        default_engine=codex.engine,
+    )
+    projects = ProjectsConfig(
+        projects={},
+        default_project=None,
+        system_prompt="global prompt",
+    )
+    runtime = TransportRuntime(router=router, projects=projects)
+    assert runtime.resolve_system_prompt(None) == "global prompt"
+
+
+def test_resolve_system_prompt_project_only() -> None:
+    codex = ScriptRunner([Return(answer="ok")], engine="codex")
+    router = AutoRouter(
+        entries=[RunnerEntry(engine=codex.engine, runner=codex)],
+        default_engine=codex.engine,
+    )
+    project = ProjectConfig(
+        alias="proj",
+        path=Path("."),
+        worktrees_dir=Path(".worktrees"),
+        system_prompt="project prompt",
+    )
+    projects = ProjectsConfig(
+        projects={"proj": project},
+        default_project=None,
+    )
+    runtime = TransportRuntime(router=router, projects=projects)
+    assert runtime.resolve_system_prompt(RunContext(project="proj")) == "project prompt"
+
+
+def test_resolve_system_prompt_concatenates_global_and_project() -> None:
+    codex = ScriptRunner([Return(answer="ok")], engine="codex")
+    router = AutoRouter(
+        entries=[RunnerEntry(engine=codex.engine, runner=codex)],
+        default_engine=codex.engine,
+    )
+    project = ProjectConfig(
+        alias="proj",
+        path=Path("."),
+        worktrees_dir=Path(".worktrees"),
+        system_prompt="project prompt",
+    )
+    projects = ProjectsConfig(
+        projects={"proj": project},
+        default_project=None,
+        system_prompt="global prompt",
+    )
+    runtime = TransportRuntime(router=router, projects=projects)
+    result = runtime.resolve_system_prompt(RunContext(project="proj"))
+    assert result == "global prompt\nproject prompt"
+
+
+def test_resolve_system_prompt_falls_back_to_global() -> None:
+    codex = ScriptRunner([Return(answer="ok")], engine="codex")
+    router = AutoRouter(
+        entries=[RunnerEntry(engine=codex.engine, runner=codex)],
+        default_engine=codex.engine,
+    )
+    project = ProjectConfig(
+        alias="proj",
+        path=Path("."),
+        worktrees_dir=Path(".worktrees"),
+    )
+    projects = ProjectsConfig(
+        projects={"proj": project},
+        default_project=None,
+        system_prompt="global prompt",
+    )
+    runtime = TransportRuntime(router=router, projects=projects)
+    # Project has no system_prompt, should fall back to global
+    result = runtime.resolve_system_prompt(RunContext(project="proj"))
+    assert result == "global prompt"
+
+
 def test_resolve_message_directives_override_ambient() -> None:
     runtime = _make_runtime()
     ambient = RunContext(project="proj", branch="feat/ambient")

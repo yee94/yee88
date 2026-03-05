@@ -114,20 +114,29 @@ async def _resolve_engine_run_options(
     system_prompt: str | None = None,
 ) -> EngineRunOptions | None:
     topic_override = None
+    topic_system_prompt: str | None = None
     if topic_store is not None and thread_id is not None:
         topic_override = await topic_store.get_engine_override(
             chat_id, thread_id, engine
         )
+        topic_system_prompt = await topic_store.get_system_prompt(
+            chat_id, thread_id
+        )
     chat_override = None
-    if chat_prefs is not None:
+    # When running inside a topic (thread_id is set), do NOT fall back
+    # to chat-level overrides – each topic should be independent.
+    if chat_prefs is not None and thread_id is None:
         chat_override = await chat_prefs.get_engine_override(chat_id, engine)
     merged = merge_overrides(topic_override, chat_override)
-    if merged is None and system_prompt is None:
+    # Three-layer prompt concatenation: global → project → topic
+    prompt_parts = [p for p in (system_prompt, topic_system_prompt) if p]
+    final_prompt = "\n".join(prompt_parts) if prompt_parts else None
+    if merged is None and final_prompt is None:
         return None
     return EngineRunOptions(
         model=merged.model if merged else None,
         reasoning=merged.reasoning if merged else None,
-        system=system_prompt,
+        system=final_prompt,
     )
 
 
@@ -673,6 +682,7 @@ class ResumeResolver:
         topic_key: tuple[int, int] | None,
         engine_for_session: EngineId,
         prompt_text: str,
+        context: RunContext | None = None,
     ) -> ResumeDecision:
         if resume_token is not None:
             return ResumeDecision(
@@ -695,7 +705,13 @@ class ResumeResolver:
                     prompt_text,
                 )
                 return ResumeDecision(resume_token=None, handled_by_running_task=True)
-        if self._topic_store is not None and topic_key is not None:
+        # Check project-level session_mode; skip resume when stateless.
+        project_stateless = False
+        if context is not None and context.project is not None:
+            project = self._cfg.runtime.projects.projects.get(context.project)
+            if project is not None and project.session_mode == "stateless":
+                project_stateless = True
+        if self._topic_store is not None and topic_key is not None and not project_stateless:
             stored = await self._topic_store.get_session_resume(
                 topic_key[0],
                 topic_key[1],
@@ -1279,6 +1295,21 @@ async def run_main_loop(
                             reasoning=run_options.reasoning,
                             system=run_options.system,
                         )
+                # Fall back to project-level default_model when no model
+                # has been set by explicit override, topic, or chat prefs.
+                if run_options is None or run_options.model is None:
+                    project_model = cfg.runtime.resolve_default_model(
+                        context=context,
+                    )
+                    if project_model is not None:
+                        if run_options is None:
+                            run_options = EngineRunOptions(model=project_model)
+                        else:
+                            run_options = EngineRunOptions(
+                                model=project_model,
+                                reasoning=run_options.reasoning,
+                                system=run_options.system,
+                            )
                 await run_engine(
                     exec_cfg=cfg.exec_cfg,
                     runtime=cfg.runtime,
@@ -1446,6 +1477,7 @@ async def run_main_loop(
                     topic_key=topic_key,
                     engine_for_session=engine_resolution.engine,
                     prompt_text=prompt_text,
+                    context=context,
                 )
                 if resume_decision.handled_by_running_task:
                     return
@@ -1570,6 +1602,7 @@ async def run_main_loop(
                     topic_key=pending.topic_key,
                     engine_for_session=engine_resolution.engine,
                     prompt_text=prompt_text,
+                    context=effective_context or context,
                 )
                 if resume_decision.handled_by_running_task:
                     return

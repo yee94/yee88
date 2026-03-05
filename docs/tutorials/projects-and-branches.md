@@ -200,6 +200,8 @@ Full options for `[projects.<alias>]`:
 | `worktrees_dir` | `.worktrees` | Where branch worktrees are created (relative to the project path). |
 | `worktree_base` | `null` | Base branch for new worktrees. If unset, Takopi uses `origin/HEAD`, the current branch, or `master`/`main` (in that order). |
 | `default_engine` | `null` | Engine to use for this project (overrides global default). |
+| `default_model` | `null` | Model to use for this project (overrides engine's default model). |
+| `session_mode` | `null` | `"stateless"` for fresh sessions per message, `"chat"` to resume. |
 | `chat_id` | `null` | Bind a Telegram chat/group to this project. |
 
 ## Troubleshooting

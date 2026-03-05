@@ -90,6 +90,7 @@ File size limits (not configurable):
     yee88 config set projects.happy-gadgets.path "~/dev/happy-gadgets"
     yee88 config set projects.happy-gadgets.worktrees_dir ".worktrees"
     yee88 config set projects.happy-gadgets.default_engine "claude"
+    yee88 config set projects.happy-gadgets.default_model "claude-sonnet-4"
     yee88 config set projects.happy-gadgets.worktree_base "master"
     yee88 config set projects.happy-gadgets.chat_id -1001234567890
     ```
@@ -101,6 +102,7 @@ File size limits (not configurable):
     path = "~/dev/happy-gadgets"
     worktrees_dir = ".worktrees"
     default_engine = "claude"
+    default_model = "claude-sonnet-4"
     worktree_base = "master"
     chat_id = -1001234567890
     ```
@@ -110,6 +112,8 @@ File size limits (not configurable):
 | `path` | string | (required) | Repo root (expands `~`). Relative paths are resolved against the config directory. |
 | `worktrees_dir` | string | `".worktrees"` | Worktree root (relative to `path` unless absolute). |
 | `default_engine` | string\|null | `null` | Per-project default engine. |
+| `default_model` | string\|null | `null` | Per-project default model. Used when no model is set by topic/chat prefs or explicit override. |
+| `session_mode` | `"stateless"` \| `"chat"` \| null | `null` | Per-project session mode. `"stateless"` starts a fresh engine session for every message; `"chat"` resumes the previous session. When `null`, inherits the transport-level setting. |
 | `worktree_base` | string\|null | `null` | Base branch for new worktrees. |
 | `chat_id` | int\|null | `null` | Bind a Telegram chat to this project. |
 

@@ -138,8 +138,10 @@ class ProjectSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     path: NonEmptyStr
-    worktrees_dir: NonEmptyStr = ".worktrees"
+    worktrees_dir: NonEmptyStr | None = None
     default_engine: NonEmptyStr | None = None
+    default_model: NonEmptyStr | None = None
+    session_mode: Literal["stateless", "chat"] | None = None
     worktree_base: NonEmptyStr | None = None
     chat_id: StrictInt | None = None
     system_prompt: str | None = None
@@ -251,7 +253,11 @@ class TakopiSettings(BaseSettings):
 
             path = _normalize_project_path(entry.path, config_path=config_path)
 
-            worktrees_dir = Path(entry.worktrees_dir).expanduser()
+            worktrees_dir = (
+                Path(entry.worktrees_dir).expanduser()
+                if entry.worktrees_dir is not None
+                else None
+            )
 
             default_engine = None
             if entry.default_engine is not None:
@@ -284,6 +290,8 @@ class TakopiSettings(BaseSettings):
                 path=path,
                 worktrees_dir=worktrees_dir,
                 default_engine=default_engine,
+                default_model=entry.default_model,
+                session_mode=entry.session_mode,
                 worktree_base=worktree_base,
                 chat_id=chat_id,
                 system_prompt=entry.system_prompt,

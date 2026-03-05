@@ -389,6 +389,21 @@ class _TelegramCommandExecutor(CommandExecutor):
         run_options = None
         if self._engine_overrides_resolver is not None:
             run_options = await self._engine_overrides_resolver(engine)
+        # Fall back to project-level default_model when no model
+        # has been set by topic or chat prefs.
+        if run_options is None or run_options.model is None:
+            project_model = self._runtime.resolve_default_model(
+                context=request.context,
+            )
+            if project_model is not None:
+                if run_options is None:
+                    run_options = EngineRunOptions(model=project_model)
+                else:
+                    run_options = EngineRunOptions(
+                        model=project_model,
+                        reasoning=run_options.reasoning,
+                        system=run_options.system,
+                    )
         on_thread_known = (
             self._scheduler.note_thread_known
             if self._on_thread_known is None

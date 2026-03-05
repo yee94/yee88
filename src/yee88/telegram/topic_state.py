@@ -25,6 +25,7 @@ class TopicThreadSnapshot:
     sessions: dict[str, str]
     topic_title: str | None
     default_engine: str | None
+    system_prompt: str | None = None
 
 
 class _ContextState(msgspec.Struct, forbid_unknown_fields=False):
@@ -43,6 +44,8 @@ class _ThreadState(msgspec.Struct, forbid_unknown_fields=False):
     default_engine: str | None = None
     trigger_mode: str | None = None
     engine_overrides: dict[str, EngineOverrides] = msgspec.field(default_factory=dict)
+    system_prompt: str | None = None
+    session_mode: str | None = None
 
 
 class _TopicState(msgspec.Struct, forbid_unknown_fields=False):
@@ -143,6 +146,7 @@ class TopicStateStore(JsonStateStore[_TopicState]):
         context: RunContext,
         *,
         topic_title: str | None = None,
+        system_prompt: str | None = None,
     ) -> None:
         async with self._lock:
             self._reload_locked_if_needed()
@@ -150,6 +154,28 @@ class TopicStateStore(JsonStateStore[_TopicState]):
             thread.context = _context_to_state(context)
             if topic_title is not None:
                 thread.topic_title = topic_title
+            if system_prompt is not None:
+                thread.system_prompt = system_prompt
+            self._save_locked()
+
+    async def get_system_prompt(
+        self, chat_id: int, thread_id: int
+    ) -> str | None:
+        async with self._lock:
+            self._reload_locked_if_needed()
+            thread = self._get_thread_locked(chat_id, thread_id)
+            if thread is None:
+                return None
+            return _normalize_text(thread.system_prompt)
+
+    async def set_system_prompt(
+        self, chat_id: int, thread_id: int, prompt: str | None
+    ) -> None:
+        normalized = _normalize_text(prompt)
+        async with self._lock:
+            self._reload_locked_if_needed()
+            thread = self._ensure_thread_locked(chat_id, thread_id)
+            thread.system_prompt = normalized
             self._save_locked()
 
     async def clear_context(self, chat_id: int, thread_id: int) -> None:
@@ -229,6 +255,24 @@ class TopicStateStore(JsonStateStore[_TopicState]):
 
     async def clear_trigger_mode(self, chat_id: int, thread_id: int) -> None:
         await self.set_trigger_mode(chat_id, thread_id, None)
+
+    async def get_session_mode(self, chat_id: int, thread_id: int) -> str | None:
+        async with self._lock:
+            self._reload_locked_if_needed()
+            thread = self._get_thread_locked(chat_id, thread_id)
+            if thread is None:
+                return None
+            return _normalize_text(thread.session_mode)
+
+    async def set_session_mode(
+        self, chat_id: int, thread_id: int, mode: str | None
+    ) -> None:
+        normalized = _normalize_text(mode)
+        async with self._lock:
+            self._reload_locked_if_needed()
+            thread = self._ensure_thread_locked(chat_id, thread_id)
+            thread.session_mode = normalized
+            self._save_locked()
 
     async def set_engine_override(
         self,
@@ -319,6 +363,7 @@ class TopicStateStore(JsonStateStore[_TopicState]):
             sessions=sessions,
             topic_title=thread.topic_title,
             default_engine=_normalize_text(thread.default_engine),
+            system_prompt=_normalize_text(thread.system_prompt),
         )
 
     def _get_thread_locked(self, chat_id: int, thread_id: int) -> _ThreadState | None:

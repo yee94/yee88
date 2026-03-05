@@ -136,13 +136,18 @@ def topic_init(
     branch: str | None = typer.Option(
         None, "--branch", "-b", help="Branch name (defaults to current git branch)."
     ),
+    system_prompt: str | None = typer.Option(
+        None, "--system-prompt", "-s", help="System prompt for this topic."
+    ),
 ) -> None:
     """Create a Telegram topic bound to a project/branch."""
     run_topic(
         project=project,
         branch=branch,
+        branch_explicit=branch is not None,
         delete=False,
         config_path=None,
+        system_prompt=system_prompt,
     )
 
 

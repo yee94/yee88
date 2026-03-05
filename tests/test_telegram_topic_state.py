@@ -73,3 +73,45 @@ async def test_topic_state_store_delete_thread(tmp_path) -> None:
 
     assert await store.get_thread(1, 10) is None
     assert await store.find_thread_for_context(1, context) is None
+
+
+@pytest.mark.anyio
+async def test_topic_state_system_prompt_roundtrip(tmp_path) -> None:
+    path = tmp_path / "telegram_topics_state.json"
+    store = TopicStateStore(path)
+    context = RunContext(project="proj", branch="main")
+    await store.set_context(1, 10, context, system_prompt="be helpful")
+
+    assert await store.get_system_prompt(1, 10) == "be helpful"
+
+    snapshot = await store.get_thread(1, 10)
+    assert snapshot is not None
+    assert snapshot.system_prompt == "be helpful"
+
+    # Persist across reload
+    store2 = TopicStateStore(path)
+    assert await store2.get_system_prompt(1, 10) == "be helpful"
+
+
+@pytest.mark.anyio
+async def test_topic_state_system_prompt_set_and_clear(tmp_path) -> None:
+    path = tmp_path / "telegram_topics_state.json"
+    store = TopicStateStore(path)
+    context = RunContext(project="proj", branch="main")
+    await store.set_context(1, 10, context)
+
+    assert await store.get_system_prompt(1, 10) is None
+
+    await store.set_system_prompt(1, 10, "new prompt")
+    assert await store.get_system_prompt(1, 10) == "new prompt"
+
+    await store.set_system_prompt(1, 10, None)
+    assert await store.get_system_prompt(1, 10) is None
+
+
+@pytest.mark.anyio
+async def test_topic_state_system_prompt_not_set(tmp_path) -> None:
+    path = tmp_path / "telegram_topics_state.json"
+    store = TopicStateStore(path)
+
+    assert await store.get_system_prompt(1, 99) is None

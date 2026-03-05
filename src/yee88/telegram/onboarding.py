@@ -941,23 +941,20 @@ async def step_install_skill(ui: UI, _svc: Services, _state: OnboardingState) ->
         ui.print("  skipped skill installation")
         return
 
-    skills_path = Path(yee88.__file__).parent / "skills"
-    if not skills_path.exists():
-        ui.print(f"  warning: skills not found at {skills_path}")
-        return
-
     ui.print("  installing yee88 skill...")
     try:
         result = subprocess.run(
-            ["npx", "skills", "add", str(skills_path), "-g", "--all", "-y"],
+            ["npx", "skills", "add", "yee94/yee88", "-g", "--all", "-y"],
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=120,
         )
         if result.returncode == 0:
             ui.print("  ✓ skill installed successfully")
         else:
-            ui.print(f"  warning: skill installation failed (exit code {result.returncode})")
+            ui.print(
+                f"  warning: skill installation failed (exit code {result.returncode})"
+            )
             if result.stderr:
                 ui.print(f"  error: {result.stderr.strip()}")
     except subprocess.TimeoutExpired:

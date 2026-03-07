@@ -708,9 +708,10 @@ class ResumeResolver:
                     prompt_text,
                 )
                 return ResumeDecision(resume_token=None, handled_by_running_task=True)
-        # Check project-level session_mode; skip resume when stateless.
+        # Check project-level session_mode; skip resume when stateless,
+        # but allow resume when the user explicitly replies to a bot message.
         project_stateless = False
-        if context is not None and context.project is not None:
+        if reply_id is None and context is not None and context.project is not None:
             project = self._cfg.runtime.projects.projects.get(context.project)
             if project is not None and project.session_mode == "stateless":
                 project_stateless = True
@@ -2119,5 +2120,14 @@ async def run_main_loop(
 
             async for update in poller_fn(cfg):
                 await route_update(update)
+            # Poller exhausted (e.g. in tests).  Give in-flight message
+            # handlers a moment to finish, then cancel background services
+            # (cron scheduler, config watch, etc.) so the task group exits.
+            if poller is not poll_updates:
+                for _ in range(200):  # up to ~2 s
+                    await anyio.sleep(0.01)
+                    if not state.running_tasks:
+                        break
+                tg.cancel_scope.cancel()
     finally:
         await cfg.exec_cfg.transport.close()

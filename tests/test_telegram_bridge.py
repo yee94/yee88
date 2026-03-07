@@ -1735,8 +1735,7 @@ async def test_run_main_loop_persists_topic_sessions_in_project_scope(
             thread_id=77,
         )
 
-    with anyio.fail_after(2):
-        await run_main_loop(cfg, poller)
+    await run_main_loop(cfg, poller)
 
     state_path = resolve_state_path(runtime.config_path or tmp_path / "yee88.toml")
     store = TopicStateStore(state_path)

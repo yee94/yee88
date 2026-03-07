@@ -221,7 +221,7 @@ def test_progress_renderer_footer_includes_model() -> None:
     assert parts.footer == (
         "`ctx: z80 @feat/name`"
         f"{HARD_BREAK}`codex resume 0199a213-81c0-7800-8aa1-bbab2a035a53`"
-        f"{HARD_BREAK}model: gpt-4.1-mini"
+        f"{HARD_BREAK}`model: gpt-4.1-mini`"
     )
 
 

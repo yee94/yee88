@@ -1,7 +1,7 @@
-import asyncio
 from datetime import datetime
 from typing import Callable, Awaitable, Set, Dict
 from anyio.abc import TaskGroup
+import anyio
 from anyio import Lock, move_on_after
 from .manager import CronManager
 from .models import CronJob
@@ -118,7 +118,7 @@ class CronScheduler:
                 self.task_group.start_soon(self._run_job_safe, job)
 
             logger.info("cron.scheduler.sleeping", cycle=cycle, seconds=sleep_seconds)
-            await asyncio.sleep(sleep_seconds)
+            await anyio.sleep(sleep_seconds)
 
     def _acquire_job_lock(self, job_id: str) -> bool:
         if job_id in self._running_jobs:

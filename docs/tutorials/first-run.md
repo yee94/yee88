@@ -13,25 +13,12 @@ cd ~/dev/your-project
 yee88
 ```
 
-Takopi keeps running in your terminal. In Telegram, your bot will post a startup message like:
+Takopi keeps running in your terminal. In Telegram, your bot will post a random startup greeting, for example:
 
 !!! yee88 "Takopi"
-    🐙 yee88 is ready
+    上线了，老板尽管吩咐 🐶
 
-    default: codex<br>
-    engines: codex, claude<br>
-    projects: none<br>
-    mode: chat<br>
-    topics: disabled<br>
-    resume lines: hidden<br>
-    working in: /Users/you/dev/your-project
-
-The engines/projects list reflects your setup. This tells you:
-
-- Which engine is the default
-- Which engines are available (and any missing ones)
-- Which projects are registered
-- Which directory Takopi will run in
+If any engine has issues (not installed, misconfigured, etc.), a warning line will follow the greeting.
 
 !!! note "Takopi runs where you start it"
     The agent will see files in your current directory. If you want to work on a different repo, stop Takopi (`Ctrl+C`) and restart it in that directory—or set up [projects](projects-and-branches.md) to switch repos from chat.
@@ -165,7 +152,7 @@ The agent CLI isn't on your PATH. Install the CLI for the engine you're using (e
 
 **Bot doesn't respond at all**
 
-Check that Takopi is still running in your terminal. You should also see a startup message ("yee88 is ready") from the bot in Telegram. If not, restart it.
+Check that Takopi is still running in your terminal. You should also see a startup greeting from the bot in Telegram. If not, restart it.
 
 **Resume doesn't work (starts a new conversation)**
 

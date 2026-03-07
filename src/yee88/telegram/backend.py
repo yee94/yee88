@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import random
 from pathlib import Path
 from typing import Literal
 
@@ -40,44 +41,36 @@ def _build_startup_message(
     show_resume_line: bool,
     topics: TelegramTopicsSettings,
 ) -> str:
-    available_engines = list(runtime.available_engine_ids())
+    # Collect engine warnings so the user knows if something is broken.
     missing_engines = list(runtime.missing_engine_ids())
     misconfigured_engines = list(runtime.engine_ids_with_status("bad_config"))
     failed_engines = list(runtime.engine_ids_with_status("load_error"))
 
-    engine_list = ", ".join(available_engines) if available_engines else "none"
-
-    notes: list[str] = []
+    warnings: list[str] = []
     if missing_engines:
-        notes.append(f"not installed: {', '.join(missing_engines)}")
+        warnings.append(f"not installed: {', '.join(missing_engines)}")
     if misconfigured_engines:
-        notes.append(f"misconfigured: {', '.join(misconfigured_engines)}")
+        warnings.append(f"misconfigured: {', '.join(misconfigured_engines)}")
     if failed_engines:
-        notes.append(f"failed to load: {', '.join(failed_engines)}")
-    if notes:
-        engine_list = f"{engine_list} ({'; '.join(notes)})"
-    project_aliases = sorted(set(runtime.project_aliases()), key=str.lower)
-    project_list = ", ".join(project_aliases) if project_aliases else "none"
-    resume_label = "shown" if show_resume_line else "hidden"
-    topics_label = "disabled"
-    if topics.enabled:
-        resolved_scope, _ = _resolve_topics_scope_raw(
-            topics.scope, chat_id, runtime.project_chat_ids()
-        )
-        scope_label = (
-            f"auto ({resolved_scope})" if topics.scope == "auto" else resolved_scope
-        )
-        topics_label = f"enabled (scope={scope_label})"
-    return (
-        f"\N{OCTOPUS} **yee88 is ready**\n\n"
-        f"default: `{runtime.default_engine}`  \n"
-        f"engines: `{engine_list}`  \n"
-        f"projects: `{project_list}`  \n"
-        f"mode: `{session_mode}`  \n"
-        f"topics: `{topics_label}`  \n"
-        f"resume lines: `{resume_label}`  \n"
-        f"working in: `{startup_pwd}`"
-    )
+        warnings.append(f"failed to load: {', '.join(failed_engines)}")
+
+    greetings = [
+        "老板，我醒了，有什么吩咐? 🫡",
+        "来了来了，随时待命 💪",
+        "报到! 说吧，今天干点啥? 🤓",
+        "准备就绪，等你发话 🎯",
+        "上线了，老板尽管吩咐 🐶",
+        "打卡成功，开始营业~ 🏪",
+        "就位! 有活儿尽管派 🔥",
+        "嗨老板，想我了没? 😏",
+        "又是为老板打工的一天 🥱",
+        "醒了醒了，别催~ 😤",
+    ]
+    lines = [random.choice(greetings)]
+    if warnings:
+        lines.append("")
+        lines.append(f"(engine warnings: {'; '.join(warnings)})")
+    return "\n".join(lines)
 
 
 class TelegramBackend(TransportBackend):

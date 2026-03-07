@@ -49,9 +49,11 @@ def test_build_startup_message_includes_missing_engines(tmp_path: Path) -> None:
         topics=TelegramTopicsSettings(),
     )
 
-    assert "yee88 is ready" in message
-    assert "engines: `codex (not installed: pi)`" in message
-    assert "projects: `none`" in message
+    # Greeting is randomly picked; just verify the first line is non-empty
+    # and the engine warning is present.
+    first_line = message.split("\n")[0]
+    assert len(first_line) > 0
+    assert "not installed: pi" in message
 
 
 def test_build_startup_message_surfaces_unavailable_engine_reasons(
@@ -92,7 +94,8 @@ def test_build_startup_message_surfaces_unavailable_engine_reasons(
         topics=TelegramTopicsSettings(),
     )
 
-    assert "engines: `codex" in message
+    first_line = message.split("\n")[0]
+    assert len(first_line) > 0
     assert "misconfigured: pi" in message
     assert "failed to load: claude" in message
 

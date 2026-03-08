@@ -2401,6 +2401,7 @@ async def test_run_main_loop_prompt_upload_auto_resumes_chat_sessions(
             enabled=True,
             auto_put=True,
             auto_put_mode="prompt",
+            use_global_tmp=False,
         ),
     )
 

@@ -437,6 +437,7 @@ class TelegramLoopState:
     forward_coalesce_s: float
     media_group_debounce_s: float
     transport_id: str | None
+    inflight: int = 0
 
 
 if TYPE_CHECKING:
@@ -1164,15 +1165,25 @@ async def run_main_loop(
                             )
                             return
 
+                        cron_thread_id = (
+                            int(initial_ref.thread_id)
+                            if initial_ref.thread_id
+                            else None
+                        )
+                        # Provide chat_session_key so the new session token
+                        # gets persisted and follow-up replies can resume it.
+                        cron_session_key: tuple[int, int | None] | None = None
+                        if state.chat_session_store is not None:
+                            cron_session_key = (cfg.chat_id, None)
+
                         await run_job(
                             chat_id=cfg.chat_id,
                             user_msg_id=int(initial_ref.message_id),
                             text=job.message,
                             resume_token=None,
                             context=context,
-                            thread_id=int(initial_ref.thread_id)
-                            if initial_ref.thread_id
-                            else None,
+                            thread_id=cron_thread_id,
+                            chat_session_key=cron_session_key,
                             force_new_session=True,
                             run_options_model=job.model,
                             engine_override=engine_override,
@@ -1342,9 +1353,12 @@ async def run_main_loop(
                     )
                     else None
                 )
+                # force_new_session: skip *reading* the stored session
+                # (resume_token is set to None below) but still allow
+                # *writing* the newly created session token back to the
+                # persistent stores so that follow-up replies can resume it.
                 if force_new_session:
                     topic_key = None
-                    chat_session_key = None
                 engine_for_overrides = (
                     resume_token.engine
                     if resume_token is not None and not force_new_session
@@ -1735,11 +1749,25 @@ async def run_main_loop(
                     progress_ref,
                 )
 
+            def _track(
+                coro_fn: Callable[..., Awaitable[None]],
+            ) -> Callable[..., Awaitable[None]]:
+                """Wrap *coro_fn* so ``state.inflight`` is incremented while it runs."""
+
+                async def _wrapper(*args: object, **kwargs: object) -> None:
+                    state.inflight += 1
+                    try:
+                        await coro_fn(*args, **kwargs)
+                    finally:
+                        state.inflight -= 1
+
+                return _wrapper
+
             forward_coalescer = ForwardCoalescer(
                 task_group=tg,
                 debounce_s=state.forward_coalesce_s,
                 sleep=sleep,
-                dispatch=_dispatch_pending_prompt,
+                dispatch=_track(_dispatch_pending_prompt),
                 pending=state.pending_prompts,
             )
 
@@ -2008,7 +2036,7 @@ async def run_main_loop(
                         caption_text = text.strip()
                         if cfg.files.auto_put_mode == "prompt" and caption_text:
                             tg.start_soon(
-                                handle_prompt_upload,
+                                _track(handle_prompt_upload),
                                 msg,
                                 caption_text,
                                 ambient_context,
@@ -2016,7 +2044,7 @@ async def run_main_loop(
                             )
                         else:
                             tg.start_soon(
-                                handle_upload_and_forward,
+                                _track(handle_upload_and_forward),
                                 msg,
                                 ambient_context,
                                 state.topic_store,
@@ -2053,7 +2081,7 @@ async def run_main_loop(
                             topic_store=state.topic_store,
                         )
                         tg.start_soon(
-                            dispatch_command,
+                            _track(dispatch_command),
                             cfg,
                             msg,
                             text,
@@ -2095,7 +2123,7 @@ async def run_main_loop(
                         message_id=msg.message_id,
                         reason="reply_resume",
                     )
-                    tg.start_soon(_dispatch_pending_prompt, pending)
+                    tg.start_soon(_track(_dispatch_pending_prompt), pending)
                     return
                 forward_coalescer.schedule(pending)
 
@@ -2152,7 +2180,7 @@ async def run_main_loop(
             if poller is not poll_updates:
                 for _ in range(200):  # up to ~2 s
                     await anyio.sleep(0.01)
-                    if not state.running_tasks:
+                    if not state.running_tasks and state.inflight <= 0:
                         break
                 tg.cancel_scope.cancel()
     finally:

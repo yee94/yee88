@@ -1,5 +1,12 @@
 # changelog
 
+## v0.10.5 (2026-03-12)
+
+### fixes
+
+- handoff: 在未注册项目的目录下自动补注册项目配置，避免新建 handoff topic 后继续对话时报 `unknown project`
+- handoff: 无法自动注册项目时降级为无项目上下文，避免写入失效 topic context
+
 ## v0.10.4 (2026-03-11)
 
 ### fixes

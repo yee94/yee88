@@ -213,15 +213,18 @@ class HttpBotClient:
         json: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
         files: dict[str, Any] | None = None,
+        timeout: httpx.Timeout | None = None,
     ) -> Any | None:
         request_payload = json if json is not None else data
         logger.debug("telegram.request", method=method, payload=request_payload)
         try:
             if json is not None:
-                resp = await self._http_client.post(f"{self._base}/{method}", json=json)
+                resp = await self._http_client.post(
+                    f"{self._base}/{method}", json=json, timeout=timeout
+                )
             else:
                 resp = await self._http_client.post(
-                    f"{self._base}/{method}", data=data, files=files
+                    f"{self._base}/{method}", data=data, files=files, timeout=timeout
                 )
         except httpx.HTTPError as exc:
             url = getattr(exc.request, "url", None)
@@ -328,7 +331,10 @@ class HttpBotClient:
             params["offset"] = offset
         if allowed_updates is not None:
             params["allowed_updates"] = allowed_updates
-        result = await self._post("getUpdates", params)
+        # 为 long-poll 请求单独设置 HTTP 超时，在 Telegram 轮询参数之上加 10s 缓冲，
+        # 防止底层 TCP 连接挂起时协程永久阻塞（全局 timeout_s=None 不提供保护）。
+        request_timeout = httpx.Timeout(timeout=float(timeout_s) + 10.0)
+        result = await self._request("getUpdates", json=params, timeout=request_timeout)
         if result is None or not isinstance(result, list):
             return None
         try:

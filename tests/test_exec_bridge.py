@@ -453,3 +453,49 @@ async def test_handle_message_error_preserves_resume_token() -> None:
     # Resume token is returned via HandleResult, not displayed in message text
     assert result.resume_token is not None
     assert result.resume_token.value == session_id
+
+
+@pytest.mark.anyio
+async def test_handle_message_suppresses_cancel_output_when_requested() -> None:
+    transport = FakeTransport()
+    session_id = "019b66fc-64c2-7a71-81cd-081c504cfeb2"
+    hold = anyio.Event()
+    runner = ScriptRunner(
+        [Wait(hold)],
+        engine=CODEX_ENGINE,
+        resume_value=session_id,
+    )
+    cfg = ExecBridgeConfig(
+        transport=transport,
+        presenter=MarkdownPresenter(),
+        final_notify=True,
+    )
+    running_tasks: dict = {}
+
+    async def run_handle_message() -> None:
+        await handle_message(
+            cfg,
+            runner=runner,
+            incoming=IncomingMessage(
+                channel_id=123, message_id=10, text="do something"
+            ),
+            resume_token=None,
+            running_tasks=running_tasks,
+        )
+
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(run_handle_message)
+        for _ in range(100):
+            if running_tasks:
+                break
+            await anyio.sleep(0)
+        assert running_tasks
+        running_task = running_tasks[next(iter(running_tasks))]
+        with anyio.fail_after(1):
+            await running_task.resume_ready.wait()
+        running_task.suppress_cancel_output = True
+        running_task.cancel_requested.set()
+
+    assert len(transport.send_calls) == 1
+    assert transport.delete_calls
+    assert not transport.edit_calls

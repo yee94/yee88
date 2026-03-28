@@ -16,10 +16,13 @@ from yee88.runners.opencode import (
 from yee88.schemas import opencode as opencode_schema
 from yee88.telegram.commands.question import (
     QUESTION_CALLBACK_PREFIX,
+    build_question_disabled_notice,
+    build_question_disabled_reply,
     build_question_callback_data,
     build_question_keyboard,
     format_question_answer,
     format_question_message,
+    format_question_text_plain,
     parse_question_callback_data,
 )
 from yee88.telegram.types import TelegramCallbackQuery
@@ -269,6 +272,33 @@ class TestFormatQuestionMessage:
 
     def test_empty_questions(self) -> None:
         assert format_question_message([]) == ""
+
+    def test_plain_text_formatter(self) -> None:
+        questions = [
+            {
+                "question": "Pick a color",
+                "header": "Color",
+                "options": [
+                    {"label": "Red", "description": "Warm"},
+                    {"label": "Blue"},
+                ],
+            }
+        ]
+        text = format_question_text_plain(questions)
+        assert "Color" in text
+        assert "Pick a color" in text
+        assert "1. Red — Warm" in text
+        assert "2. Blue" in text
+
+    def test_disabled_notice_and_reply_include_guidance(self) -> None:
+        questions = [{"question": "Which framework?", "options": [{"label": "React"}]}]
+        notice = build_question_disabled_notice(questions)
+        reply = build_question_disabled_reply(questions)
+        assert "自动禁用" in notice
+        assert "原始问题" in notice
+        assert "Which framework?" in notice
+        assert "Do not call the question tool again." in reply
+        assert "Original question:" in reply
 
 
 # ---------------------------------------------------------------------------

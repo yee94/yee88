@@ -102,6 +102,7 @@ class RunningTask:
     cancel_requested: anyio.Event = field(default_factory=anyio.Event)
     done: anyio.Event = field(default_factory=anyio.Event)
     context: RunContext | None = None
+    suppress_cancel_output: bool = False
 
 
 RunningTasks = dict[MessageRef, RunningTask]
@@ -305,6 +306,7 @@ class RunOutcome:
     cancelled: bool = False
     completed: CompletedEvent | None = None
     resume: ResumeToken | None = None
+    suppress_cancel_output: bool = False
 
 
 async def run_runner_with_cancel(
@@ -352,6 +354,7 @@ async def run_runner_with_cancel(
         async def wait_cancel(task: RunningTask) -> None:
             await task.cancel_requested.wait()
             outcome.cancelled = True
+            outcome.suppress_cancel_output = task.suppress_cancel_output
             tg.cancel_scope.cancel()
 
         tg.start_soon(run_runner)
@@ -557,6 +560,16 @@ async def handle_message(
 
     if outcome.cancelled:
         resume = sync_resume_token(progress_tracker, outcome.resume)
+        if outcome.suppress_cancel_output:
+            if progress_ref is not None:
+                logger.debug(
+                    "transport.delete_message",
+                    channel_id=progress_ref.channel_id,
+                    message_id=progress_ref.message_id,
+                    tag="cancel_suppressed",
+                )
+                await cfg.transport.delete(ref=progress_ref)
+            return HandleResult(message_ref=None, resume_token=resume)
         logger.info(
             "handle.cancelled",
             resume=resume.value if resume else None,

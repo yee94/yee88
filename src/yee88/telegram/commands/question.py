@@ -73,6 +73,53 @@ def format_question_message(questions: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def format_question_text_plain(questions: list[dict[str, Any]]) -> str:
+    """Format question(s) into plain text for chat/user prompts."""
+    lines: list[str] = []
+    for i, q in enumerate(questions):
+        question_text = str(q.get("question", "") or "").strip()
+        header = str(q.get("header", "") or "").strip()
+        if header and header != question_text:
+            lines.append(header)
+        if question_text:
+            lines.append(question_text)
+        options = q.get("options", [])
+        if isinstance(options, list) and options:
+            for j, opt in enumerate(options, start=1):
+                label = str(opt.get("label", f"Option {j}") or f"Option {j}")
+                desc = str(opt.get("description", "") or "").strip()
+                if desc:
+                    lines.append(f"{j}. {label} — {desc}")
+                else:
+                    lines.append(f"{j}. {label}")
+        if i < len(questions) - 1:
+            lines.append("")
+    return "\n".join(lines).strip()
+
+
+def build_question_disabled_notice(questions: list[dict[str, Any]]) -> str:
+    question_text = format_question_text_plain(questions)
+    lines = [
+        "⚠️ AI 尝试调用 question tool。Telegram 侧已自动禁用这类交互，避免会话卡住。",
+        "我已要求它改为下一条消息直接用文字向你提问。",
+    ]
+    if question_text:
+        lines.extend(["", "原始问题：", question_text])
+    return "\n".join(lines)
+
+
+def build_question_disabled_reply(questions: list[dict[str, Any]]) -> str:
+    question_text = format_question_text_plain(questions)
+    lines = [
+        "Question tool is unavailable in this Telegram chat.",
+        "Do not call the question tool again.",
+        "In your next assistant message, ask me the same thing directly in plain text and include short numbered options if needed.",
+    ]
+    if question_text:
+        lines.extend(["", "Original question:", question_text])
+    return "\n".join(lines)
+
+
 def build_question_keyboard(
     action_id: str,
     questions: list[dict[str, Any]],

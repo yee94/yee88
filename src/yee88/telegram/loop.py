@@ -37,9 +37,8 @@ from .commands.model import (
     handle_model_select_callback,
 )
 from .commands.question import (
-    QUESTION_CALLBACK_PREFIX,
-    handle_question_callback,
-    send_question_message,
+    build_question_disabled_notice,
+    build_question_disabled_reply,
 )
 from .commands.file_transfer import FILE_PUT_USAGE
 from .commands.handlers import (
@@ -1229,78 +1228,39 @@ async def run_main_loop(
 
             tg.start_soon(run_signal_watcher)
 
-            # --- Question tool support ---
-            # Tracks pending question actions so callback queries can resolve them.
-            _questions_pending: dict[str, ActionEvent] = {}
-            _question_resume_tokens: dict[str, ResumeToken | None] = {}
-            _question_chat_info: dict[str, tuple[int, int | None]] = {}
-
             def _make_on_question(
                 chat_id: int,
+                user_msg_id: int,
                 thread_id: int | None,
             ) -> Callable[[ActionEvent, ResumeToken | None], Awaitable[None]]:
                 async def _on_question(
                     evt: ActionEvent, resume: ResumeToken | None
                 ) -> None:
-                    action_id = evt.action.id
-                    _questions_pending[action_id] = evt
-                    _question_resume_tokens[action_id] = resume
-                    _question_chat_info[action_id] = (chat_id, thread_id)
-                    await send_question_message(
-                        cfg,
+                    questions = evt.action.detail.get("questions", [])
+                    for ref, task in list(state.running_tasks.items()):
+                        if ref.channel_id == chat_id and not task.done.is_set():
+                            task.suppress_cancel_output = True
+                            task.cancel_requested.set()
+                            break
+                    await send_plain(
+                        cfg.exec_cfg.transport,
                         chat_id=chat_id,
-                        action_event=evt,
+                        user_msg_id=user_msg_id,
                         thread_id=thread_id,
+                        text=build_question_disabled_notice(questions),
                     )
+                    if resume is not None:
+                        tg.start_soon(
+                            run_job,
+                            chat_id,
+                            user_msg_id,
+                            build_question_disabled_reply(questions),
+                            resume,
+                            None,
+                            thread_id,
+                        )
 
                 return _on_question
-
-            async def _handle_question_answer(
-                query: TelegramCallbackQuery,
-            ) -> None:
-                result = await handle_question_callback(
-                    cfg,
-                    query,
-                    _questions_pending,
-                    _question_resume_tokens,
-                )
-                if result is None:
-                    return
-                answer, resume_token = result
-                # Find the chat/thread for this question and resume the session.
-                action_id = query.data.split(":")[2] if query.data else ""
-                chat_info = _question_chat_info.pop(action_id, None)
-                if chat_info is None:
-                    return
-                q_chat_id, q_thread_id = chat_info
-                # Cancel the blocked running task (if any) by finding it
-                # in running_tasks for this chat.
-                for ref, task in list(state.running_tasks.items()):
-                    if ref.channel_id == q_chat_id and not task.done.is_set():
-                        task.cancel_requested.set()
-                        # Wait briefly for cancellation to take effect
-                        with anyio.move_on_after(2.0):
-                            await task.done.wait()
-                        break
-                # Show the selected answer in chat
-                await send_plain(
-                    cfg.exec_cfg.transport,
-                    chat_id=q_chat_id,
-                    user_msg_id=query.message_id,
-                    thread_id=q_thread_id,
-                    text=f"✅ {answer}",
-                )
-                # Resume the session with the answer so the AI can continue
-                if resume_token is not None:
-                    answer_text = f"My answer to your question: {answer}"
-                    await run_job(
-                        q_chat_id,
-                        query.message_id,
-                        answer_text,
-                        resume_token,
-                        None,
-                        q_thread_id,
-                    )
 
             def wrap_on_thread_known(
                 base_cb: Callable[[ResumeToken, anyio.Event], Awaitable[None]] | None,
@@ -1420,7 +1380,7 @@ async def run_main_loop(
                     thread_id=thread_id,
                     progress_ref=progress_ref,
                     run_options=run_options,
-                    on_question=_make_on_question(chat_id, thread_id),
+                    on_question=_make_on_question(chat_id, user_msg_id, thread_id),
                 )
                 # Store message_id → resume_token mapping for cache-based resume
                 if (
@@ -2155,13 +2115,6 @@ async def run_main_loop(
                         tg.start_soon(
                             handle_model_select_callback,
                             cfg,
-                            update,
-                        )
-                    elif update.data and update.data.startswith(
-                        QUESTION_CALLBACK_PREFIX
-                    ):
-                        tg.start_soon(
-                            _handle_question_answer,
                             update,
                         )
                     else:

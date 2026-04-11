@@ -25,10 +25,18 @@ async def drain_stderr(
     stream: ByteReceiveStream,
     logger: Any,
     tag: str,
-) -> None:
+) -> str:
+    """Drain stderr and return collected text.
+
+    Lines are still logged individually. The returned string is the
+    full stderr output joined by newlines, useful for embedding in
+    error messages when the subprocess exits unexpectedly.
+    """
+    lines: list[str] = []
     try:
         async for line in iter_bytes_lines(stream):
             text = line.decode("utf-8", errors="replace")
+            lines.append(text)
             log_pipeline(
                 logger,
                 "subprocess.stderr",
@@ -42,3 +50,4 @@ async def drain_stderr(
             tag=tag,
             error=str(exc),
         )
+    return "".join(lines)

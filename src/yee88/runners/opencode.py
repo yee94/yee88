@@ -13,8 +13,12 @@ Session IDs use the format: ses_XXXX (e.g., ses_494719016ffe85dkDMj0FPRbHK)
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
+import tempfile
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
@@ -38,7 +42,7 @@ from ..model import (
 from ..runner import JsonlSubprocessRunner, ResumeTokenMixin, Runner
 from .run_options import get_run_options
 from ..schemas import opencode as opencode_schema
-from ..utils.paths import relativize_path
+from ..utils.paths import get_run_base_dir, relativize_path
 from .tool_actions import tool_input_path, tool_kind_and_title
 
 logger = get_logger(__name__)
@@ -48,6 +52,69 @@ ENGINE: EngineId = "opencode"
 _RESUME_RE = re.compile(
     r"(?im)^\s*`?opencode(?:\s+run)?\s+(?:--session|-s)\s+(?P<token>ses_[A-Za-z0-9]+)`?\s*$"
 )
+
+
+def _is_primary_visible_agent(config: Any) -> bool:
+    return (
+        isinstance(config, dict)
+        and config.get("mode") == "primary"
+        and config.get("hidden") is not True
+    )
+
+
+def _select_debug_primary_agent(payload: dict[str, Any]) -> str | None:
+    agents = payload.get("agent")
+    if not isinstance(agents, dict):
+        return None
+
+    build_agent = agents.get("build")
+    if _is_primary_visible_agent(build_agent):
+        return "build"
+
+    default_agent = payload.get("default_agent")
+    if isinstance(default_agent, str) and _is_primary_visible_agent(
+        agents.get(default_agent)
+    ):
+        return default_agent
+
+    for name, config in agents.items():
+        if isinstance(name, str) and _is_primary_visible_agent(config):
+            return name
+
+    return None
+
+
+@lru_cache(maxsize=32)
+def _resolve_opencode_primary_agent(opencode_cmd: str, cwd: str) -> str | None:
+    try:
+        with tempfile.TemporaryFile(mode="w+b") as stdout_file:
+            proc = subprocess.run(
+                [opencode_cmd, "debug", "config"],
+                cwd=cwd,
+                stdout=stdout_file,
+                stderr=subprocess.PIPE,
+                text=False,
+                timeout=10,
+                check=False,
+            )
+            stdout_file.seek(0)
+            raw_stdout = stdout_file.read()
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    stdout = raw_stdout.decode("utf-8", errors="replace")
+    if proc.returncode != 0 or not stdout.strip():
+        return None
+
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    return _select_debug_primary_agent(payload)
 
 
 @dataclass(slots=True)
@@ -325,11 +392,18 @@ class OpenCodeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
 
     opencode_cmd: str = "opencode"
     model: str | None = None
+    agent: str | None = None
     session_title: str = "opencode"
     logger = logger
 
     def command(self) -> str:
         return self.opencode_cmd
+
+    def resolve_agent(self) -> str | None:
+        if self.agent:
+            return self.agent
+        base_dir = get_run_base_dir() or Path.cwd()
+        return _resolve_opencode_primary_agent(self.opencode_cmd, str(base_dir))
 
     def build_args(
         self,
@@ -342,6 +416,10 @@ class OpenCodeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
         args = ["run", "--format", "json"]
         if resume is not None:
             args.extend(["--session", resume.value])
+        else:
+            agent = self.resolve_agent()
+            if agent:
+                args.extend(["--agent", agent])
         model = self.model
         if run_options is not None and run_options.model:
             model = run_options.model
@@ -435,8 +513,11 @@ class OpenCodeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
         resume: ResumeToken | None,
         found_session: ResumeToken | None,
         state: OpenCodeStreamState,
+        stderr: str = "",
     ) -> list[TakopiEvent]:
         message = f"opencode failed (rc={rc})."
+        if stderr:
+            message = f"{message}\n{stderr.strip()[-500:]}"
         resume_for_completed = found_session or resume
         return [
             self.note_event(
@@ -459,9 +540,12 @@ class OpenCodeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
         resume: ResumeToken | None,
         found_session: ResumeToken | None,
         state: OpenCodeStreamState,
+        stderr: str = "",
     ) -> list[TakopiEvent]:
         if not found_session:
             message = "opencode finished but no session_id was captured"
+            if stderr:
+                message = f"{message}\n{stderr.strip()[-500:]}"
             resume_for_completed = resume
             return [
                 CompletedEvent(
@@ -484,6 +568,8 @@ class OpenCodeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
             ]
 
         message = "opencode finished without a result event"
+        if stderr:
+            message = f"{message}\n{stderr.strip()[-500:]}"
         return [
             CompletedEvent(
                 engine=ENGINE,
@@ -505,11 +591,20 @@ def build_runner(config: EngineConfig, config_path: Path) -> Runner:
             f"Invalid `opencode.model` in {config_path}; expected a string."
         )
 
+    agent = config.get("agent")
+    if agent is None:
+        agent = config.get("main_agent")
+    if agent is not None and not isinstance(agent, str):
+        raise ConfigError(
+            f"Invalid `opencode.agent` in {config_path}; expected a string."
+        )
+
     title = str(model) if model is not None else "opencode"
 
     return OpenCodeRunner(
         opencode_cmd=opencode_cmd,
         model=model,
+        agent=agent,
         session_title=title,
     )
 

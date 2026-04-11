@@ -134,6 +134,7 @@ class JsonlStreamState:
     did_emit_completed: bool = False
     ignored_after_completed: bool = False
     jsonl_seq: int = 0
+    stderr_text: str = ""
 
 
 class JsonlSubprocessRunner(BaseRunner):
@@ -284,8 +285,12 @@ class JsonlSubprocessRunner(BaseRunner):
         resume: ResumeToken | None,
         found_session: ResumeToken | None,
         state: Any,
+        stderr: str = "",
     ) -> list[TakopiEvent]:
         message = f"{self.tag()} failed (rc={rc})."
+        if stderr:
+            stderr_detail = stderr.strip()[-500:]
+            message = f"{message}\n{stderr_detail}"
         resume_for_completed = found_session or resume
         return [
             self.note_event(message, state=state),
@@ -304,8 +309,12 @@ class JsonlSubprocessRunner(BaseRunner):
         resume: ResumeToken | None,
         found_session: ResumeToken | None,
         state: Any,
+        stderr: str = "",
     ) -> list[TakopiEvent]:
         message = f"{self.tag()} finished without a result event"
+        if stderr:
+            stderr_detail = stderr.strip()[-500:]
+            message = f"{message}\n{stderr_detail}"
         resume_for_completed = found_session or resume
         return [
             CompletedEvent(
@@ -643,14 +652,15 @@ class JsonlSubprocessRunner(BaseRunner):
 
             rc: int | None = None
             stream = JsonlStreamState(expected_session=resume)
+            stderr_result: list[str] = []
+
+            async def _collect_stderr() -> None:
+                stderr_result.append(
+                    await drain_stderr(proc.stderr, logger, tag)  # type: ignore[arg-type]
+                )
 
             async with anyio.create_task_group() as tg:
-                tg.start_soon(
-                    drain_stderr,
-                    proc.stderr,
-                    logger,
-                    tag,
-                )
+                tg.start_soon(_collect_stderr)
                 async for evt in self._iter_jsonl_events(
                     stdout=proc.stdout,
                     stream=stream,
@@ -663,6 +673,8 @@ class JsonlSubprocessRunner(BaseRunner):
 
                 rc = await proc.wait()
 
+            stream.stderr_text = stderr_result[0] if stderr_result else ""
+            no_output = stream.jsonl_seq == 0
             logger.info("subprocess.exit", pid=proc.pid, rc=rc)
             if stream.did_emit_completed:
                 return
@@ -673,6 +685,7 @@ class JsonlSubprocessRunner(BaseRunner):
                     resume=resume,
                     found_session=found_session,
                     state=state,
+                    stderr=stream.stderr_text if no_output else "",
                 )
                 for evt in events:
                     if isinstance(evt, CompletedEvent):
@@ -689,6 +702,7 @@ class JsonlSubprocessRunner(BaseRunner):
                 resume=resume,
                 found_session=found_session,
                 state=state,
+                stderr=stream.stderr_text if no_output else "",
             )
             for evt in events:
                 if isinstance(evt, CompletedEvent):

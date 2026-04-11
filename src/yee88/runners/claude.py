@@ -414,8 +414,11 @@ class ClaudeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
         resume: ResumeToken | None,
         found_session: ResumeToken | None,
         state: ClaudeStreamState,
+        stderr: str = "",
     ) -> list[TakopiEvent]:
         message = f"claude failed (rc={rc})."
+        if stderr:
+            message = f"{message}\n{stderr.strip()[-500:]}"
         resume_for_completed = found_session or resume
         return [
             self.note_event(message, state=state, ok=False),
@@ -431,9 +434,12 @@ class ClaudeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
         resume: ResumeToken | None,
         found_session: ResumeToken | None,
         state: ClaudeStreamState,
+        stderr: str = "",
     ) -> list[TakopiEvent]:
         if not found_session:
             message = "claude finished but no session_id was captured"
+            if stderr:
+                message = f"{message}\n{stderr.strip()[-500:]}"
             resume_for_completed = resume
             return [
                 state.factory.completed_error(
@@ -443,6 +449,8 @@ class ClaudeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
             ]
 
         message = "claude finished without a result event"
+        if stderr:
+            message = f"{message}\n{stderr.strip()[-500:]}"
         return [
             state.factory.completed_error(
                 error=message,

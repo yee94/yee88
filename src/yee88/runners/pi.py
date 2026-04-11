@@ -416,8 +416,11 @@ class PiRunner(ResumeTokenMixin, JsonlSubprocessRunner):
         resume: ResumeToken | None,
         found_session: ResumeToken | None,
         state: PiStreamState,
+        stderr: str = "",
     ) -> list[TakopiEvent]:
         message = f"pi failed (rc={rc})."
+        if stderr:
+            message = f"{message}\n{stderr.strip()[-500:]}"
         resume_for_completed = found_session or resume or state.resume
         return [
             self.note_event(message, state=state),
@@ -437,9 +440,12 @@ class PiRunner(ResumeTokenMixin, JsonlSubprocessRunner):
         resume: ResumeToken | None,
         found_session: ResumeToken | None,
         state: PiStreamState,
+        stderr: str = "",
     ) -> list[TakopiEvent]:
         resume_for_completed = found_session or resume or state.resume
         message = "pi finished without an agent_end event"
+        if stderr:
+            message = f"{message}\n{stderr.strip()[-500:]}"
         return [
             CompletedEvent(
                 engine=ENGINE,

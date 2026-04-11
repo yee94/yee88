@@ -3,7 +3,9 @@ from pathlib import Path
 
 import anyio
 import pytest
+import yee88.runners.opencode as opencode_runner
 
+from yee88.config import ConfigError
 from yee88.model import (
     ActionEvent,
     CompletedEvent,
@@ -17,6 +19,8 @@ from yee88.runners.opencode import (
     OpenCodeStreamState,
     ENGINE,
     translate_opencode_event,
+    _select_debug_primary_agent,
+    build_runner,
 )
 from yee88.schemas import opencode as opencode_schema
 
@@ -302,6 +306,7 @@ def test_step_finish_tool_calls_does_not_complete() -> None:
 
 def test_build_args_new_session() -> None:
     runner = OpenCodeRunner(opencode_cmd="opencode", model="claude-sonnet")
+    runner.resolve_agent = lambda: None  # type: ignore[method-assign]
     args = runner.build_args("hello world", None, state=OpenCodeStreamState())
 
     assert args == [
@@ -315,8 +320,73 @@ def test_build_args_new_session() -> None:
     ]
 
 
+def test_select_debug_primary_agent_prefers_build() -> None:
+    payload = {
+        "default_agent": "primary-a",
+        "agent": {
+            "build": {"mode": "primary"},
+            "primary-a": {"mode": "primary"},
+        },
+    }
+
+    assert _select_debug_primary_agent(payload) == "build"
+
+
+def test_select_debug_primary_agent_uses_default_agent() -> None:
+    payload = {
+        "default_agent": "\u200bSisyphus - Ultraworker",
+        "agent": {
+            "build": {"mode": "subagent", "hidden": True},
+            "\u200bSisyphus - Ultraworker": {"mode": "primary"},
+            "fallback": {"mode": "primary"},
+        },
+    }
+
+    assert _select_debug_primary_agent(payload) == "\u200bSisyphus - Ultraworker"
+
+
+def test_build_args_new_session_with_configured_agent() -> None:
+    runner = OpenCodeRunner(
+        opencode_cmd="opencode",
+        model="claude-sonnet",
+        agent="primary-agent",
+    )
+    args = runner.build_args("hello world", None, state=OpenCodeStreamState())
+
+    assert args == [
+        "run",
+        "--format",
+        "json",
+        "--agent",
+        "primary-agent",
+        "--model",
+        "claude-sonnet",
+        "--",
+        "hello world",
+    ]
+
+
+def test_build_args_new_session_with_discovered_agent(monkeypatch) -> None:
+    runner = OpenCodeRunner(opencode_cmd="opencode", model="claude-sonnet")
+    monkeypatch.setattr(
+        opencode_runner,
+        "_resolve_opencode_primary_agent",
+        lambda *_args: "\u200bSisyphus - Ultraworker",
+    )
+
+    args = runner.build_args("hello world", None, state=OpenCodeStreamState())
+
+    assert args[:5] == [
+        "run",
+        "--format",
+        "json",
+        "--agent",
+        "\u200bSisyphus - Ultraworker",
+    ]
+
+
 def test_build_args_with_resume() -> None:
-    runner = OpenCodeRunner(opencode_cmd="opencode")
+    runner = OpenCodeRunner(opencode_cmd="opencode", agent="primary-agent")
     token = ResumeToken(engine=ENGINE, value="ses_abc123")
     args = runner.build_args("continue", token, state=OpenCodeStreamState())
 
@@ -329,6 +399,18 @@ def test_build_args_with_resume() -> None:
         "--",
         "continue",
     ]
+
+
+def test_build_runner_reads_agent_alias() -> None:
+    runner = build_runner({"model": "foo", "main_agent": "primary-agent"}, Path("cfg"))
+
+    assert isinstance(runner, OpenCodeRunner)
+    assert runner.agent == "primary-agent"
+
+
+def test_build_runner_rejects_non_string_agent() -> None:
+    with pytest.raises(ConfigError):
+        build_runner({"agent": ["bad"]}, Path("cfg"))
 
 
 def test_stdin_payload_returns_none() -> None:

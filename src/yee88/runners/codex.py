@@ -586,8 +586,11 @@ class CodexRunner(ResumeTokenMixin, JsonlSubprocessRunner):
         resume: ResumeToken | None,
         found_session: ResumeToken | None,
         state: CodexRunState,
+        stderr: str = "",
     ) -> list[TakopiEvent]:
         message = f"codex exec failed (rc={rc})."
+        if stderr:
+            message = f"{message}\n{stderr.strip()[-500:]}"
         resume_for_completed = found_session or resume
         return [
             self.note_event(
@@ -608,9 +611,12 @@ class CodexRunner(ResumeTokenMixin, JsonlSubprocessRunner):
         resume: ResumeToken | None,
         found_session: ResumeToken | None,
         state: CodexRunState,
+        stderr: str = "",
     ) -> list[TakopiEvent]:
         if not found_session:
             message = "codex exec finished but no session_id/thread_id was captured"
+            if stderr:
+                message = f"{message}\n{stderr.strip()[-500:]}"
             resume_for_completed = resume
             return [
                 state.factory.completed_error(

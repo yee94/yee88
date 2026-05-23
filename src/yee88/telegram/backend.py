@@ -45,9 +45,13 @@ def _build_startup_message(
     missing_engines = list(runtime.missing_engine_ids())
     misconfigured_engines = list(runtime.engine_ids_with_status("bad_config"))
     failed_engines = list(runtime.engine_ids_with_status("load_error"))
+    has_available_engine = bool(runtime.available_engine_ids())
 
     warnings: list[str] = []
-    if missing_engines:
+    # Only surface "not installed" when no engine is usable at all — users
+    # typically only install the engine(s) they need and don't want noise
+    # about the others.
+    if missing_engines and not has_available_engine:
         warnings.append(f"not installed: {', '.join(missing_engines)}")
     if misconfigured_engines:
         warnings.append(f"misconfigured: {', '.join(misconfigured_engines)}")

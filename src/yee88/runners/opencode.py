@@ -117,6 +117,78 @@ def _resolve_opencode_primary_agent(opencode_cmd: str, cwd: str) -> str | None:
     return _select_debug_primary_agent(payload)
 
 
+def _recover_assistant_text_from_session(
+    opencode_cmd: str, session_id: str
+) -> str | None:
+    """Fall back to `opencode export <session_id>` to recover the assistant's
+    final text when streaming `--format json` failed to emit it.
+
+    opencode CLI v1.15.x has a known bug where `run --format json` sometimes
+    exits cleanly without writing the assistant's `text` and `step_finish`
+    events to stdout, even though the underlying session db has the full
+    response. This helper reads that authoritative copy.
+
+    Returns the concatenated text of the **last** assistant message, or None
+    if export fails or no assistant text is present.
+    """
+    if not session_id:
+        return None
+    try:
+        proc = subprocess.run(
+            [opencode_cmd, "export", session_id],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+    if proc.returncode != 0 or not proc.stdout:
+        return None
+
+    raw = proc.stdout.decode("utf-8", errors="replace")
+    # `opencode export` prints a header line ("Exporting session: ...") before
+    # the JSON body. Strip everything before the first '{'.
+    brace_idx = raw.find("{")
+    if brace_idx < 0:
+        return None
+    try:
+        payload = json.loads(raw[brace_idx:])
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return None
+
+    # Find the last assistant message and concatenate its text parts.
+    for msg in reversed(messages):
+        if not isinstance(msg, dict):
+            continue
+        info = msg.get("info") or {}
+        if info.get("role") != "assistant":
+            continue
+        parts = msg.get("parts") or []
+        if not isinstance(parts, list):
+            continue
+        chunks: list[str] = []
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") != "text":
+                continue
+            text = part.get("text")
+            if isinstance(text, str) and text:
+                chunks.append(text)
+        if chunks:
+            return "".join(chunks)
+        return None  # last assistant message had no text — don't keep digging
+    return None
+
+
 @dataclass(slots=True)
 class OpenCodeStreamState:
     """State tracked during OpenCode JSONL streaming."""
@@ -557,24 +629,50 @@ class OpenCodeRunner(ResumeTokenMixin, JsonlSubprocessRunner):
                 )
             ]
 
-        if state.saw_step_finish:
+        # opencode CLI (>=1.15) frequently exits cleanly without ever emitting
+        # a step_finish event. As long as we captured both a session_id and
+        # at least some text, treat it as a successful run regardless of
+        # whether step_finish arrived.
+        if state.last_text:
             return [
                 CompletedEvent(
                     engine=ENGINE,
                     ok=True,
-                    answer=state.last_text or "",
+                    answer=state.last_text,
                     resume=found_session,
                 )
             ]
 
-        message = "opencode finished without a result event"
+        # No text streamed at all but we do have a session id. opencode CLI
+        # v1.15.x has a confirmed bug where `run --format json` can emit only
+        # `step_start` to stdout while the assistant's actual reply is fully
+        # persisted in the session db. Recover it via `opencode export`.
+        recovered = _recover_assistant_text_from_session(
+            self.opencode_cmd, found_session.value
+        )
+        if recovered:
+            return [
+                TextDeltaEvent(engine=ENGINE, snapshot=recovered),
+                CompletedEvent(
+                    engine=ENGINE,
+                    ok=True,
+                    answer=recovered,
+                    resume=found_session,
+                ),
+            ]
+
+        # Truly empty: opencode produced nothing usable in either the stream
+        # or the session db. Surface as an error so the user knows to
+        # investigate (auth, quota, model id, network), but keep the
+        # captured session for resume.
+        message = "opencode finished without producing any text"
         if stderr:
             message = f"{message}\n{stderr.strip()[-500:]}"
         return [
             CompletedEvent(
                 engine=ENGINE,
                 ok=False,
-                answer=state.last_text or "",
+                answer="",
                 resume=found_session,
                 error=message,
             )

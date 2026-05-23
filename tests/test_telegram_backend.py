@@ -17,7 +17,14 @@ from yee88.telegram import backend as telegram_backend
 from yee88.transport_runtime import TransportRuntime
 
 
-def test_build_startup_message_includes_missing_engines(tmp_path: Path) -> None:
+def test_build_startup_message_suppresses_missing_when_an_engine_works(
+    tmp_path: Path,
+) -> None:
+    """`not installed` warning is suppressed when at least one engine is usable.
+
+    Users typically only install the engine(s) they want; missing siblings
+    are noise, not an error worth surfacing.
+    """
     codex = "codex"
     pi = "pi"
     runner = ScriptRunner([Return(answer="ok")], engine=codex)
@@ -48,11 +55,52 @@ def test_build_startup_message_includes_missing_engines(tmp_path: Path) -> None:
         topics=TelegramTopicsSettings(),
     )
 
-    # Greeting is randomly picked; just verify the first line is non-empty
-    # and the engine warning is present.
     first_line = message.split("\n")[0]
     assert len(first_line) > 0
-    assert "not installed: pi" in message
+    assert "not installed" not in message
+    assert "engine warnings" not in message
+
+
+def test_build_startup_message_reports_missing_when_no_engine_works(
+    tmp_path: Path,
+) -> None:
+    """If every engine is missing, surface the warning so the user can act."""
+    codex = "codex"
+    pi = "pi"
+    bad_codex = ScriptRunner([Return(answer="ok")], engine=codex)
+    bad_pi = ScriptRunner([Return(answer="ok")], engine=pi)
+    router = AutoRouter(
+        entries=[
+            RunnerEntry(
+                engine=codex,
+                runner=bad_codex,
+                status="missing_cli",
+                issue="missing",
+            ),
+            RunnerEntry(
+                engine=pi,
+                runner=bad_pi,
+                status="missing_cli",
+                issue="missing",
+            ),
+        ],
+        default_engine=codex,
+    )
+    runtime = TransportRuntime(
+        router=router,
+        projects=ProjectsConfig(projects={}, default_project=None),
+        watch_config=True,
+    )
+
+    message = telegram_backend._build_startup_message(
+        runtime,
+        startup_pwd=str(tmp_path),
+        chat_id=123,
+        session_mode="stateless",
+        topics=TelegramTopicsSettings(),
+    )
+
+    assert "not installed: codex, pi" in message
 
 
 def test_build_startup_message_surfaces_unavailable_engine_reasons(

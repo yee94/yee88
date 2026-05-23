@@ -800,3 +800,171 @@ def test_text_delta_resets_after_text_finished() -> None:
     assert len(events) == 1
     assert isinstance(events[0], TextDeltaEvent)
     assert events[0].snapshot == "Step 2"
+
+
+# ---------------------------------------------------------------------------
+# stream_end_events: recovery from opencode CLI v1.15.x stdout streaming bug
+# ---------------------------------------------------------------------------
+
+
+def test_stream_end_with_text_succeeds_without_step_finish() -> None:
+    """opencode 1.15.x often skips step_finish; we must still report success
+    as long as we captured a session id and some streamed text."""
+    runner = OpenCodeRunner(opencode_cmd="opencode")
+    state = OpenCodeStreamState()
+    state.session_id = "ses_abc"
+    state.last_text = "Hello there"
+    found = ResumeToken(engine=ENGINE, value="ses_abc")
+
+    events = runner.stream_end_events(
+        resume=None,
+        found_session=found,
+        state=state,
+    )
+
+    completed = next(evt for evt in events if isinstance(evt, CompletedEvent))
+    assert completed.ok is True
+    assert completed.answer == "Hello there"
+    assert completed.resume == found
+    assert completed.error is None
+
+
+def test_stream_end_recovers_text_via_export_when_stream_was_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the stream emits only step_start, fall back to `opencode export`
+    to recover the assistant's actual reply from the session db."""
+    runner = OpenCodeRunner(opencode_cmd="opencode")
+    state = OpenCodeStreamState()
+    state.session_id = "ses_xyz"
+    found = ResumeToken(engine=ENGINE, value="ses_xyz")
+
+    captured: dict = {}
+
+    def fake_recover(opencode_cmd: str, session_id: str) -> str | None:
+        captured["cmd"] = opencode_cmd
+        captured["session"] = session_id
+        return "recovered answer"
+
+    monkeypatch.setattr(
+        opencode_runner,
+        "_recover_assistant_text_from_session",
+        fake_recover,
+    )
+
+    events = runner.stream_end_events(
+        resume=None,
+        found_session=found,
+        state=state,
+    )
+
+    assert captured == {"cmd": "opencode", "session": "ses_xyz"}
+    completed = next(evt for evt in events if isinstance(evt, CompletedEvent))
+    assert completed.ok is True
+    assert completed.answer == "recovered answer"
+    assert completed.resume == found
+    # Also emit a text delta so the live progress message shows the answer
+    text_deltas = [evt for evt in events if isinstance(evt, TextDeltaEvent)]
+    assert len(text_deltas) == 1
+    assert text_deltas[0].snapshot == "recovered answer"
+
+
+def test_stream_end_reports_error_when_recovery_yields_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If both the stream and `opencode export` return no assistant text,
+    surface a descriptive error rather than a silent empty success."""
+    runner = OpenCodeRunner(opencode_cmd="opencode")
+    state = OpenCodeStreamState()
+    state.session_id = "ses_void"
+    found = ResumeToken(engine=ENGINE, value="ses_void")
+
+    monkeypatch.setattr(
+        opencode_runner,
+        "_recover_assistant_text_from_session",
+        lambda cmd, sid: None,
+    )
+
+    events = runner.stream_end_events(
+        resume=None,
+        found_session=found,
+        state=state,
+        stderr="",
+    )
+
+    completed = next(evt for evt in events if isinstance(evt, CompletedEvent))
+    assert completed.ok is False
+    assert completed.answer == ""
+    assert completed.resume == found
+    assert completed.error is not None
+    assert "without producing any text" in completed.error
+
+
+def test_recover_assistant_text_parses_export_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Helper extracts the last assistant message's text parts from
+    `opencode export` JSON output, including the leading header line."""
+    fake_payload = {
+        "info": {"id": "ses_recover"},
+        "messages": [
+            {
+                "info": {"role": "user"},
+                "parts": [{"type": "text", "text": "你好"}],
+            },
+            {
+                "info": {"role": "assistant"},
+                "parts": [
+                    {"type": "step-start"},
+                    {"type": "text", "text": "你好！"},
+                    {"type": "text", "text": "有什么可以帮你的吗？"},
+                    {"type": "step-finish", "reason": "stop"},
+                ],
+            },
+        ],
+    }
+    body = "Exporting session: ses_recover\n" + json.dumps(fake_payload)
+
+    class _FakeProc:
+        returncode = 0
+        stdout = body.encode("utf-8")
+
+    def fake_run(cmd, **kwargs):
+        assert cmd == ["opencode", "export", "ses_recover"]
+        return _FakeProc()
+
+    monkeypatch.setattr(opencode_runner.subprocess, "run", fake_run)
+
+    text = opencode_runner._recover_assistant_text_from_session(
+        "opencode", "ses_recover"
+    )
+    assert text == "你好！有什么可以帮你的吗？"
+
+
+def test_recover_assistant_text_returns_none_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Subprocess failure / non-zero exit / unparseable JSON all yield None
+    so the caller can fall through to the error path safely."""
+
+    class _FailProc:
+        returncode = 1
+        stdout = b""
+
+    monkeypatch.setattr(
+        opencode_runner.subprocess, "run", lambda *a, **kw: _FailProc()
+    )
+    assert (
+        opencode_runner._recover_assistant_text_from_session("opencode", "ses_x")
+        is None
+    )
+
+    # Empty session id short-circuits without calling subprocess.
+    def _should_not_call(*a, **kw):
+        raise AssertionError("subprocess.run should not be invoked for empty id")
+
+    monkeypatch.setattr(opencode_runner.subprocess, "run", _should_not_call)
+    assert (
+        opencode_runner._recover_assistant_text_from_session("opencode", "")
+        is None
+    )

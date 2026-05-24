@@ -107,6 +107,36 @@ async def _get_opencode_models() -> list[str]:
         return []
 
 
+# CodeBuddy has no `models` subcommand; the canonical list lives in the
+# ``--model`` help text as ``Currently supported: (m1, m2, ...)``. We parse
+# that fragment from ``codebuddy --help`` stdout. ``codebuddy config get model``
+# only returns the currently active model — not the full list.
+_CODEBUDDY_MODELS_RE = re.compile(
+    r"Currently\s+supported:\s*\(([^)]+)\)", re.IGNORECASE
+)
+
+
+async def _get_codebuddy_models() -> list[str]:
+    """Fetch the list of supported codebuddy models by parsing ``--help``."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "codebuddy",
+            "--help",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return []
+        match = _CODEBUDDY_MODELS_RE.search(stdout.decode())
+        if not match:
+            return []
+        raw = match.group(1)
+        return [m.strip() for m in raw.split(",") if m.strip()]
+    except Exception:  # noqa: BLE001 — match opencode helper: any spawn failure → empty
+        return []
+
+
 async def _send_model_selector(
     cfg: TelegramBridgeConfig,
     msg: TelegramIncomingMessage,
@@ -219,6 +249,16 @@ async def _handle_model_command(
             models = await _get_opencode_models()
             opencode_cfg = cfg.runtime.engine_config("opencode")
             model_filter = opencode_cfg.get("model_filter")
+            if model_filter and isinstance(model_filter, str):
+                models = _apply_model_filter(models, model_filter)
+            if models:
+                await _send_model_selector(cfg, msg, engine, models)
+                return
+
+        if engine == "codebuddy":
+            models = await _get_codebuddy_models()
+            codebuddy_cfg = cfg.runtime.engine_config("codebuddy")
+            model_filter = codebuddy_cfg.get("model_filter")
             if model_filter and isinstance(model_filter, str):
                 models = _apply_model_filter(models, model_filter)
             if models:

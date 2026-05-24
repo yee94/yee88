@@ -379,6 +379,60 @@ def test_translate_thinking_block() -> None:
     assert events[0].action.title == "Consider the options."
 
 
+def test_translate_ask_user_question_emits_question_kind() -> None:
+    """When codebuddy invokes its AskUserQuestion tool, the translator must
+    label the action with kind="question" so the Telegram bridge can route
+    it through ``_on_question`` (cancel job + send disabled-notice).
+
+    The CLI sometimes emits the tool name as 'AskUserQuestion' or simply
+    'question' depending on context — both must hit the same kind.
+    """
+    state = CodeBuddyStreamState()
+    event = {
+        "type": "assistant",
+        "message": {
+            "id": "msg_q",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "tu_q1",
+                    "name": "AskUserQuestion",
+                    "input": {
+                        "questions": [
+                            {
+                                "header": "Engine choice",
+                                "question": "Which engine should I use?",
+                                "options": [
+                                    {"label": "claude"},
+                                    {"label": "codebuddy"},
+                                ],
+                            }
+                        ]
+                    },
+                }
+            ],
+        },
+    }
+
+    events = translate_codebuddy_event(
+        _decode_event(event),
+        title="codebuddy",
+        state=state,
+        factory=state.factory,
+    )
+
+    assert len(events) == 1
+    action_event = events[0]
+    assert isinstance(action_event, ActionEvent)
+    assert action_event.phase == "started"
+    assert action_event.action.kind == "question"
+    # The detail dict carries the raw input so the bridge can render the
+    # questions/options to Telegram (or, today, the disabled-notice).
+    questions = action_event.action.detail["input"]["questions"]
+    assert questions[0]["header"] == "Engine choice"
+    assert len(questions[0]["options"]) == 2
+
+
 # --------------------------------------------------------------------------- #
 # concurrent run serialization (per session)
 # --------------------------------------------------------------------------- #

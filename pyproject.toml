@@ -1,7 +1,7 @@
 [project]
 name = "yee88"
 authors = [{name = "yee.wang"}]
-version = "0.10.11"
+version = "0.10.12"
 description = "Telegram bridge for Codex, Claude Code, and other agent CLIs."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -43,6 +43,7 @@ yee88 = "yee88.cli:main"
 [project.entry-points."yee88.engine_backends"]
 codex = "yee88.runners.codex:BACKEND"
 claude = "yee88.runners.claude:BACKEND"
+codebuddy = "yee88.runners.codebuddy:BACKEND"
 opencode = "yee88.runners.opencode:BACKEND"
 pi = "yee88.runners.pi:BACKEND"
 
@@ -72,8 +73,11 @@ docs = [
 ]
 
 [tool.pytest.ini_options]
-addopts = ["--cov=yee88", "--cov-branch", "--cov-report=term-missing", "--cov-fail-under=81"]
+addopts = ["--cov=yee88", "--cov-branch", "--cov-report=term-missing", "--cov-fail-under=81", "-m", "not live"]
 testpaths = ["tests"]
+markers = [
+    "live: tests that spawn the real codebuddy/claude/codex CLI binary; run locally with `pytest -m live` and skip in CI",
+]
 
 [tool.mutmut]
 paths_to_mutate = ["src/yee88"]

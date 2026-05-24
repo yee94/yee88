@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import json
-import sqlite3
-import subprocess
-from dataclasses import dataclass
-from datetime import datetime
+import os
 from pathlib import Path
 
 import anyio
@@ -21,27 +17,38 @@ from ..telegram.client import TelegramClient
 from ..telegram.topic_state import TopicStateStore, resolve_state_path
 from ..telegram.engine_overrides import EngineOverrides
 from ..utils.git import resolve_default_base, resolve_main_worktree_root
+from .handoff_sources import HandoffSessionInfo, HandoffSource
+from .handoff_sources.codebuddy import CodeBuddyHandoffSource
+from .handoff_sources.opencode import (
+    DEFAULT_OPENCODE_DB,
+    DEFAULT_OPENCODE_STORAGE,
+    OpenCodeHandoffSource,
+)
 
 app = typer.Typer(help="Handoff session context to Telegram")
 
-OPENCODE_STORAGE = Path.home() / ".local" / "share" / "opencode" / "storage"
-OPENCODE_DB = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+# Backward-compat module-level paths used by older tests / external scripts.
+OPENCODE_STORAGE = DEFAULT_OPENCODE_STORAGE
+OPENCODE_DB = DEFAULT_OPENCODE_DB
+
+# Engines that have a HandoffSource implementation. Order matters for the
+# fallback when ``--engine`` is omitted and ``default_engine`` is not set.
+_SUPPORTED_HANDOFF_ENGINES = ("codebuddy", "opencode")
 
 
-@dataclass
-class SessionInfo:
-    id: str
-    directory: str
-    updated: float
-    title: str
+def _build_handoff_source(engine_id: str) -> HandoffSource:
+    if engine_id == "opencode":
+        return OpenCodeHandoffSource()
+    if engine_id == "codebuddy":
+        return CodeBuddyHandoffSource()
+    raise typer.BadParameter(
+        f"handoff is not supported for engine '{engine_id}'. "
+        f"Supported engines: {', '.join(_SUPPORTED_HANDOFF_ENGINES)}"
+    )
 
-    @property
-    def project_name(self) -> str:
-        return Path(self.directory).name if self.directory else "unknown"
 
-    @property
-    def updated_str(self) -> str:
-        return datetime.fromtimestamp(self.updated / 1000).strftime("%m-%d %H:%M")
+# Re-exported alias for tests that still reference SessionInfo as a dataclass.
+SessionInfo = HandoffSessionInfo
 
 
 def _normalize_project_alias(value: str | None) -> str | None:
@@ -118,149 +125,41 @@ def _ensure_handoff_project(
     return project_key, f"auto-registered project {project_key!r}"
 
 
-def _get_recent_sessions(limit: int = 10) -> list[SessionInfo]:
-    try:
-        result = subprocess.run(
-            ["opencode", "session", "list", "--format", "json", "-n", str(limit)],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        data = json.loads(result.stdout)
-        return [
-            SessionInfo(
-                id=s.get("id", ""),
-                directory=s.get("directory", ""),
-                updated=s.get("updated", 0),
-                title=s.get("title", ""),
-            )
-            for s in data
-        ]
-    except (subprocess.CalledProcessError, json.JSONDecodeError, FileNotFoundError):
-        return []
+def _get_recent_sessions(
+    limit: int = 10, *, source: HandoffSource | None = None
+) -> list[HandoffSessionInfo]:
+    src = source if source is not None else OpenCodeHandoffSource()
+    return src.list_sessions(limit=limit)
 
 
-def _get_session_messages(session_id: str, limit: int = 5) -> list[dict]:
-    # 优先从 SQLite 数据库读取（新版 OpenCode 格式）
-    if OPENCODE_DB.exists():
-        result = _get_session_messages_sqlite(session_id, limit)
-        if result:
-            return result
-
-    # 回退到旧版文件系统格式
-    return _get_session_messages_fs(session_id, limit)
+def _get_session_messages(
+    session_id: str, limit: int = 5, *, source: HandoffSource | None = None
+) -> list[dict]:
+    src = source if source is not None else OpenCodeHandoffSource()
+    return src.get_messages(session_id, limit=limit)
 
 
-def _get_session_model_id(session_id: str) -> str | None:
-    """从 OpenCode session 最近的 assistant 消息中提取完整模型 ID (providerID/modelID)。"""
-    if not OPENCODE_DB.exists():
-        return None
-    try:
-        conn = sqlite3.connect(str(OPENCODE_DB))
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        # 取最近一条 assistant 消息的 modelID 和 providerID
-        cursor.execute(
-            "SELECT data FROM message "
-            "WHERE session_id = ? "
-            "ORDER BY time_created DESC LIMIT 20",
-            (session_id,),
-        )
-        for row in cursor.fetchall():
-            msg_data = json.loads(row["data"])
-            model_id = msg_data.get("modelID")
-            if model_id and msg_data.get("role") == "assistant":
-                provider_id = msg_data.get("providerID")
-                conn.close()
-                # 拼接完整模型 ID: providerID/modelID
-                if provider_id:
-                    return f"{provider_id}/{model_id}"
-                return model_id
-        conn.close()
-    except (sqlite3.Error, json.JSONDecodeError, OSError):
-        pass
-    return None
+def _get_session_model_id(
+    session_id: str, *, source: HandoffSource | None = None
+) -> str | None:
+    src = source if source is not None else OpenCodeHandoffSource()
+    return src.get_model_id(session_id)
+
+
+# --------------------------------------------------------------------------- #
+# Legacy SQLite/FS helpers below are kept only because external code/tests may
+# still import them. New code should go through HandoffSource instead.
+# --------------------------------------------------------------------------- #
 
 
 def _get_session_messages_sqlite(session_id: str, limit: int = 5) -> list[dict]:
-    try:
-        conn = sqlite3.connect(str(OPENCODE_DB))
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        # 取最近 limit 条 user/assistant 消息
-        cursor.execute(
-            "SELECT id, data FROM message "
-            "WHERE session_id = ? "
-            "ORDER BY time_created DESC LIMIT ?",
-            (session_id, limit),
-        )
-        rows = cursor.fetchall()
-        rows.reverse()  # 按时间正序
-
-        result = []
-        for row in rows:
-            msg_data = json.loads(row["data"])
-            role = msg_data.get("role", "unknown")
-            msg_id = row["id"]
-
-            # 从 part 表读取文本内容
-            cursor.execute(
-                "SELECT data FROM part WHERE message_id = ? ORDER BY time_created ASC",
-                (msg_id,),
-            )
-            for part_row in cursor.fetchall():
-                part_data = json.loads(part_row["data"])
-                if part_data.get("type") == "text":
-                    text = part_data.get("text", "")
-                    result.append({"role": role, "text": text})
-                    break
-
-        conn.close()
-        return result
-    except (sqlite3.Error, json.JSONDecodeError, OSError):
-        return []
+    src = OpenCodeHandoffSource()
+    return src._messages_from_sqlite(session_id, limit)
 
 
 def _get_session_messages_fs(session_id: str, limit: int = 5) -> list[dict]:
-    """旧版文件系统格式读取（兼容）"""
-    message_dir = OPENCODE_STORAGE / "message" / session_id
-    if not message_dir.exists():
-        return []
-
-    messages: list[tuple[int, str, str]] = []
-    for msg_file in message_dir.glob("msg_*.json"):
-        try:
-            data = json.loads(msg_file.read_text())
-            created = data.get("time", {}).get("created", 0)
-            role = data.get("role", "unknown")
-            msg_id = data.get("id", "")
-            messages.append((created, role, msg_id))
-        except (json.JSONDecodeError, OSError):
-            continue
-
-    messages.sort(key=lambda x: x[0], reverse=True)
-    messages = messages[:limit]
-    messages.reverse()
-
-    result = []
-    for _, role, msg_id in messages:
-        part_dir = OPENCODE_STORAGE / "part" / msg_id
-        if not part_dir.exists():
-            continue
-        for part_file in part_dir.glob("prt_*.json"):
-            try:
-                part_data = json.loads(part_file.read_text())
-                if part_data.get("type") == "text":
-                    text = part_data.get("text", "")
-                    if text.startswith('"') and text.endswith('"\n'):
-                        text = json.loads(text.rstrip("\n"))
-                    result.append({"role": role, "text": text})
-                    break
-            except (json.JSONDecodeError, OSError):
-                continue
-
-    return result
+    src = OpenCodeHandoffSource()
+    return src._messages_from_fs(session_id, limit)
 
 
 import re
@@ -320,6 +219,8 @@ async def _create_handoff_topic(
     project: str | None,
     config_path: Path,
     message: str,
+    *,
+    engine: str = "opencode",
 ) -> tuple[int, bool] | None:
     title = f"📱 {project} handoff" if project else "📱 handoff"
 
@@ -345,7 +246,7 @@ async def _create_handoff_topic(
                 topic_title=title,
             )
 
-        resume_token = ResumeToken(engine="opencode", value=session_id)
+        resume_token = ResumeToken(engine=engine, value=session_id)
         await store.set_session_resume(chat_id, thread_id, resume_token)
 
         sent = await _send_message_with_client(
@@ -415,6 +316,22 @@ def send(
     project: str | None = typer.Option(
         None, "--project", "-p", help="Project name for context"
     ),
+    engine: str | None = typer.Option(
+        None,
+        "--engine",
+        "-e",
+        help=(
+            "Source engine to read sessions from. Defaults to default_engine "
+            "in yee88.toml when supported, otherwise opencode. "
+            f"Supported: {', '.join(_SUPPORTED_HANDOFF_ENGINES)}"
+        ),
+    ),
+    all_projects: bool = typer.Option(
+        False,
+        "--all",
+        "-a",
+        help="List sessions from every project, not just the current cwd.",
+    ),
 ) -> None:
     result = load_settings_if_exists()
     if result is None:
@@ -438,16 +355,59 @@ def send(
         )
         raise typer.Exit(1)
 
+    # Resolve handoff engine: explicit --engine wins, then yee88.toml's
+    # default_engine when it's something we know how to read, otherwise we
+    # fall back to opencode (the historical default) so legacy invocations
+    # keep working.
+    if engine is not None:
+        engine_id = engine
+    elif settings.default_engine in _SUPPORTED_HANDOFF_ENGINES:
+        engine_id = settings.default_engine
+    else:
+        engine_id = "opencode"
+
+    if engine_id not in _SUPPORTED_HANDOFF_ENGINES:
+        typer.echo(
+            f"❌ handoff 暂不支持引擎 '{engine_id}'。"
+            f"已支持: {', '.join(_SUPPORTED_HANDOFF_ENGINES)}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    source = _build_handoff_source(engine_id)
+    engine_label = engine_id.capitalize()
+
     session_id = session
     session_project = project
     session_directory: str | None = None
     if session_id is None:
-        sessions = _get_recent_sessions(limit=10)
+        # By default, scope the picker to the cwd the user is invoking from
+        # (so `cd ~/Code/wxapplib && yee88 handoff` only shows wxapplib
+        # sessions). Pass --all to see sessions across every project.
+        scope_cwd = None if all_projects else os.getcwd()
+        sessions = source.list_sessions(limit=10, cwd=scope_cwd)
+
+        if not sessions and scope_cwd is not None:
+            # Fall back to the global list and warn — clearer than a bare
+            # "未找到会话" error when there really *are* sessions, just not
+            # in this directory.
+            global_sessions = source.list_sessions(limit=10)
+            if global_sessions:
+                typer.echo(
+                    f"ℹ️  当前目录 ({scope_cwd}) 下没有 {engine_label} 会话；"
+                    "改为列出全部项目（要重选目录请加 --all 或 cd 到该项目）。",
+                    err=True,
+                )
+                sessions = global_sessions
+
         if not sessions:
-            typer.echo("❌ 未找到 OpenCode 会话", err=True)
+            typer.echo(f"❌ 未找到 {engine_label} 会话", err=True)
             raise typer.Exit(1)
 
-        typer.echo("\n📲 会话接力 - 将电脑端会话发送到 Telegram 继续对话")
+        scope_label = "全部项目" if all_projects or scope_cwd is None else "当前项目"
+        typer.echo(
+            f"\n📲 会话接力 - 将 {engine_label} 会话发送到 Telegram 继续对话 [{scope_label}]"
+        )
         typer.echo("━" * 50)
         typer.echo("\n📋 最近的会话:\n")
         for i, s in enumerate(sessions[:10], 1):
@@ -475,6 +435,11 @@ def send(
         typer.echo("❌ 会话 ID 为空", err=True)
         raise typer.Exit(1)
 
+    # When the user passed --session explicitly, we still want to backfill
+    # session_directory so project auto-registration can find a worktree.
+    if session_directory is None:
+        session_directory = source.get_session_directory(session_id)
+
     if session_project:
         ensured_project, note = _ensure_handoff_project(
             project=session_project,
@@ -494,7 +459,7 @@ def send(
 
     typer.echo(f"📖 读取会话 {session_id[:20]}...")
 
-    messages = _get_session_messages(session_id, limit=limit)
+    messages = source.get_messages(session_id, limit=limit)
     if not messages:
         typer.echo("❌ 无法读取会话消息", err=True)
         raise typer.Exit(1)
@@ -526,14 +491,13 @@ def send(
         created_and_sent = False
 
         if existing_thread_id is not None:
-            # 尝试复用已有 topic，先验证它在 Telegram 端是否还存在
-            resume_token = ResumeToken(engine="opencode", value=session_id)
+            # 复用已有 topic
+            resume_token = ResumeToken(engine=engine_id, value=session_id)
             await store.set_session_resume(chat_id, existing_thread_id, resume_token)
             thread_id = existing_thread_id
             reused = True
 
         if thread_id is None:
-            # 创建新 topic
             created = await _create_handoff_topic(
                 token=token,
                 chat_id=chat_id,
@@ -541,6 +505,7 @@ def send(
                 project=project_name,
                 config_path=config_path,
                 message=handoff_msg,
+                engine=engine_id,
             )
             if created is not None:
                 thread_id, created_and_sent = created
@@ -549,14 +514,14 @@ def send(
         if thread_id is None:
             return False, None, False
 
-        # 设置 topic 默认引擎为 opencode，确保 Telegram 端继续对话时使用正确引擎
-        await store.set_default_engine(chat_id, thread_id, "opencode")
+        # 设置 topic 默认引擎，确保 Telegram 端继续对话时使用正确引擎
+        await store.set_default_engine(chat_id, thread_id, engine_id)
 
         # 从原 session 提取模型 ID，设置为 topic 的 engine override
-        model_id = _get_session_model_id(session_id)
+        model_id = source.get_model_id(session_id)
         if model_id:
             override = EngineOverrides(model=model_id)
-            await store.set_engine_override(chat_id, thread_id, "opencode", override)
+            await store.set_engine_override(chat_id, thread_id, engine_id, override)
 
         success = created_and_sent
         if not created_and_sent:
@@ -567,8 +532,7 @@ def send(
                 thread_id=thread_id,
             )
 
-        # 如果发送失败，清理当前绑定并创建新 topic 重试一次。
-        # 复用老 topic 时通常是 topic 已被删除；新建 topic 时则可能是首条消息没有真正进入新 thread。
+        # 发送失败：清理并重建一次 topic 重试
         if not success:
             await store.delete_thread(chat_id, thread_id)
             created = await _create_handoff_topic(
@@ -578,16 +542,17 @@ def send(
                 project=project_name,
                 config_path=config_path,
                 message=handoff_msg,
+                engine=engine_id,
             )
             if created is None:
                 return False, None, False
             thread_id, success = created
             reused = False
-            await store.set_default_engine(chat_id, thread_id, "opencode")
+            await store.set_default_engine(chat_id, thread_id, engine_id)
             if model_id:
                 override = EngineOverrides(model=model_id)
                 await store.set_engine_override(
-                    chat_id, thread_id, "opencode", override
+                    chat_id, thread_id, engine_id, override
                 )
 
         return success, thread_id, reused
@@ -612,4 +577,11 @@ def send(
 def main(ctx: typer.Context) -> None:
     """Handoff session context to Telegram for mobile continuation."""
     if ctx.invoked_subcommand is None:
-        ctx.invoke(send, session=None, limit=3, project=None)
+        ctx.invoke(
+            send,
+            session=None,
+            limit=3,
+            project=None,
+            engine=None,
+            all_projects=False,
+        )

@@ -489,7 +489,12 @@ def build_runner(config: EngineConfig, _config_path: Path) -> Runner:
         allowed_tools = config.get("allowed_tools")
     else:
         allowed_tools = DEFAULT_ALLOWED_TOOLS
-    dangerously_skip_permissions = config.get("dangerously_skip_permissions") is True
+    # CodeBuddy runs as a non-interactive Telegram bot — there is no human to
+    # answer permission prompts mid-run. Default to skipping permissions so a
+    # fresh install just works; users can still opt out with
+    # `dangerously_skip_permissions = false` in `[codebuddy]`.
+    dsp_value = config.get("dangerously_skip_permissions")
+    dangerously_skip_permissions = True if dsp_value is None else dsp_value is True
     title = str(model)
 
     return CodeBuddyRunner(

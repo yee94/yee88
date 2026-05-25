@@ -175,6 +175,29 @@ def test_build_runner_explicit_none_keeps_default(monkeypatch) -> None:
     assert runner.model == cb_runner.DEFAULT_MODEL
 
 
+def test_build_runner_default_skips_permissions(monkeypatch) -> None:
+    """No config → permissions are skipped (non-interactive bot use case)."""
+    monkeypatch.setattr(cb_runner.shutil, "which", lambda _name: "codebuddy")
+    runner = cast(CodeBuddyRunner, cb_runner.build_runner({}, Path("yee88.toml")))
+    assert runner.dangerously_skip_permissions is True
+    args = runner._build_args("hi", None)
+    assert "--dangerously-skip-permissions" in args
+
+
+def test_build_runner_explicit_false_disables_skip(monkeypatch) -> None:
+    """Users can still opt out by setting the config to false."""
+    monkeypatch.setattr(cb_runner.shutil, "which", lambda _name: "codebuddy")
+    runner = cast(
+        CodeBuddyRunner,
+        cb_runner.build_runner(
+            {"dangerously_skip_permissions": False}, Path("yee88.toml")
+        ),
+    )
+    assert runner.dangerously_skip_permissions is False
+    args = runner._build_args("hi", None)
+    assert "--dangerously-skip-permissions" not in args
+
+
 def test_default_args_send_default_model(monkeypatch) -> None:
     """The default-built runner must actually emit ``--model claude-sonnet-4.6`` to CLI."""
     monkeypatch.setattr(cb_runner.shutil, "which", lambda _name: "codebuddy")

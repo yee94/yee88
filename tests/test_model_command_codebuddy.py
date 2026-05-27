@@ -26,22 +26,46 @@ HELP_SAMPLE = (
     "  -V, --version                                    output the version number\n"
     "  --model <model>                                  Model for the current session. "
     "Please provide the model ID. Currently supported: ("
-    "claude-sonnet-4.6, claude-sonnet-4.6-1m, claude-opus-4.7, claude-opus-4.7-1m, "
-    "gemini-3.1-pro, gpt-5.5, gpt-5.3-codex, glm-5.1-ioa, kimi-k2.6-ioa, "
-    "deepseek-v3-2-volc-ioa)\n"
+    "claude-sonnet-4.6, claude-sonnet-4.6-1m, claude-4.5, claude-opus-4.7, "
+    "claude-opus-4.7-1m, claude-opus-4.6, claude-opus-4.6-1m, claude-opus-4.5, "
+    "claude-haiku-4.5, gemini-3.1-pro, gemini-3.0-flash, gemini-3.5-flash, "
+    "gemini-2.5-pro, gemini-3.1-flash-lite, gpt-5.5, gpt-5.4, gpt-5.3-codex, "
+    "gpt-5.1-codex, gpt-5.1-codex-mini, glm-5.1-ioa, glm-5.0-turbo-ioa, "
+    "glm-5v-turbo-ioa, glm-5.0-ioa, glm-4.7-ioa, minimax-m2.7-ioa, minimax-m2.5-ioa, "
+    "kimi-k2.6-ioa, kimi-k2.5-ioa, hy3-preview-ioa, deepseek-v3-2-volc-ioa)\n"
     "  --text-to-image-model <model>                    Model for text-to-image generation\n"
 )
 
 EXPECTED_MODELS = [
     "claude-sonnet-4.6",
     "claude-sonnet-4.6-1m",
+    "claude-4.5",
     "claude-opus-4.7",
     "claude-opus-4.7-1m",
+    "claude-opus-4.6",
+    "claude-opus-4.6-1m",
+    "claude-opus-4.5",
+    "claude-haiku-4.5",
     "gemini-3.1-pro",
+    "gemini-3.0-flash",
+    "gemini-3.5-flash",
+    "gemini-2.5-pro",
+    "gemini-3.1-flash-lite",
     "gpt-5.5",
+    "gpt-5.4",
     "gpt-5.3-codex",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-mini",
     "glm-5.1-ioa",
+    "glm-5.0-turbo-ioa",
+    "glm-5v-turbo-ioa",
+    "glm-5.0-ioa",
+    "glm-4.7-ioa",
+    "minimax-m2.7-ioa",
+    "minimax-m2.5-ioa",
     "kimi-k2.6-ioa",
+    "kimi-k2.5-ioa",
+    "hy3-preview-ioa",
     "deepseek-v3-2-volc-ioa",
 ]
 
